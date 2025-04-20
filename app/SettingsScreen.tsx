@@ -30,15 +30,17 @@ const SettingsScreen: React.FC = () => {
     );
 
     // Handle sign out
-    const handleSignOut = async () => {
-        try {
-            await auth.signOut();
-            console.log("Signed out successfully!");
-            navigation.navigate("HomeScreen");  // Navigate to LoginScreen after sign out (adjust the route name accordingly)
-        } catch (error) {
-            console.error("Error signing out: ", error);
-        }
-    };
+const handleSignOut = async () => {
+    try {
+        console.log("Attempting to sign out...");
+        await auth.signOut();
+        console.log("Signed out successfully!");
+        navigation.navigate("HomeScreen");  // Ensure this is the correct route name
+    } catch (error) {
+        console.error("Error signing out: ", error);
+    }
+};
+
 
     return (
         <View style={styles.container}>
