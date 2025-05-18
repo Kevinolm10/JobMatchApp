@@ -1,4 +1,3 @@
-// MainSwipe.tsx
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, Image, StyleSheet, Alert, ActivityIndicator, Animated } from 'react-native';
 import { getFirestore, collection, getDocs } from 'firebase/firestore';
@@ -14,9 +13,12 @@ import { mapJobAdsToProfiles } from '../mapJobAdsToProfiles';
 import getJobAds, { JobAdProfile } from '../fetchJobAds';
 import { useSwipe } from '../frontend/components/useSwipe';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 export type MainSwipeNavigationProp = StackNavigationProp<RootStackParamList, 'MainSwipe'>;
 
 export interface Profile {
+  id: string;
   image: string;
   firstName: string;
   lastName: string;
@@ -32,45 +34,74 @@ export interface Profile {
   locationName?: string; // optional field
 }
 
+const QUEUE_KEY = 'PROFILE_QUEUE_CACHE';
+const SWIPED_KEY = 'SWIPED_PROFILE_IDS';
+
 const MainSwipe: React.FC = () => {
   const navigation = useNavigation<MainSwipeNavigationProp>();
   const [profileQueue, setProfileQueue] = useState<Profile[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [swipedIds, setSwipedIds] = useState<string[]>([]);
   const allProfiles = useRef<Profile[]>([]);
   const db = getFirestore();
   const auth = getAuth();
   const cachedJobAds = useRef<JobAdProfile[] | null>(null);
 
-  const { pan, panResponder } = useSwipe((direction) => {
-    setCurrentIndex((prev) => {
-      const next = prev + 1;
-      if (next + 1 < allProfiles.current.length) {
-        setProfileQueue((prevQueue) => [
-          ...prevQueue,
-          allProfiles.current[next + 1],
-        ]);
-      }
-      return next;
-    });
-  });
+  const saveQueueToStorage = async (queue: Profile[]) => {
+    try {
+      await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    } catch (e) {
+      console.error('Failed to save queue', e);
+    }
+  };
 
-  const fetchProfiles = async () => {
+  const loadQueueFromStorage = async (): Promise<Profile[] | null> => {
+    try {
+      const json = await AsyncStorage.getItem(QUEUE_KEY);
+      return json ? JSON.parse(json) : null;
+    } catch (e) {
+      console.error('Failed to load queue', e);
+      return null;
+    }
+  };
+
+  const saveSwipedIdsToStorage = async (ids: string[]) => {
+    try {
+      await AsyncStorage.setItem(SWIPED_KEY, JSON.stringify(ids));
+    } catch (e) {
+      console.error('Failed to save swiped IDs', e);
+    }
+  };
+
+  const loadSwipedIdsFromStorage = async (): Promise<string[]> => {
+    try {
+      const json = await AsyncStorage.getItem(SWIPED_KEY);
+      return json ? JSON.parse(json) : [];
+    } catch (e) {
+      console.error('Failed to load swiped IDs', e);
+      return [];
+    }
+  };
+
+  const fetchProfiles = async (excludeIds: string[] = []) => {
     try {
       const user = auth.currentUser;
       if (!user) {
         console.warn("No authenticated user");
-        return;
+        return [];
       }
 
       const usersCollection = collection(db, 'users');
       const profileSnapshot = await getDocs(usersCollection);
-      const firestoreProfiles = profileSnapshot.docs.map((doc) => doc.data() as Profile);
+      const firestoreProfiles = profileSnapshot.docs.map((doc) => ({
+        ...(doc.data() as Profile),
+        id: doc.id,
+      }));
 
       const userProfileDoc = profileSnapshot.docs.find((doc) => doc.data().email === user.email);
       if (!userProfileDoc) {
         console.warn("No user profile found for current user");
-        return;
+        return [];
       }
 
       const userProfile = userProfileDoc.data() as Profile;
@@ -86,47 +117,93 @@ const MainSwipe: React.FC = () => {
       const jobProfiles = mapJobAdsToProfiles(jobAds);
       const combinedProfiles = [...firestoreProfiles, ...jobProfiles];
 
-      const matchedProfiles = matchProfiles(userProfile, combinedProfiles);
-      allProfiles.current = matchedProfiles;
+      // Match profiles using your algorithm
+      let matchedProfiles = matchProfiles(userProfile, combinedProfiles) as Profile[];
 
-      // Only load the first 2 profiles
-      setProfileQueue(matchedProfiles.slice(0, 2));
+      // Filter out swiped profiles
+      matchedProfiles = matchedProfiles.filter((p: Profile) => !excludeIds.includes(p.id));
+
+      return matchedProfiles;
     } catch (error) {
       console.error("Error fetching profiles: ", error);
       Alert.alert("Error", "Unable to fetch profiles.");
-    } finally {
-      setLoading(false);
+      return [];
     }
   };
 
+  // Initialize: load cached queue and swiped IDs or fetch fresh profiles
   useEffect(() => {
-    fetchProfiles();
+    const initialize = async () => {
+      setLoading(true);
+      const cachedQueue = await loadQueueFromStorage();
+      const cachedSwiped = await loadSwipedIdsFromStorage();
+
+      if (cachedQueue && cachedQueue.length > 0) {
+        setProfileQueue(cachedQueue);
+        setSwipedIds(cachedSwiped);
+        allProfiles.current = cachedQueue;
+      } else {
+        const profiles = await fetchProfiles(cachedSwiped);
+        setProfileQueue(profiles.slice(0, 10)); // Load initial batch (adjust size if needed)
+        allProfiles.current = profiles;
+        setSwipedIds(cachedSwiped);
+      }
+      setLoading(false);
+    };
+    initialize();
   }, []);
 
-  // Fetch location only when visible
-useEffect(() => {
-  const currentProfile = profileQueue[currentIndex];
+  // Save queue and swiped IDs whenever they change
+  useEffect(() => {
+    if (profileQueue.length > 0) saveQueueToStorage(profileQueue);
+  }, [profileQueue]);
 
-  if (
-    currentProfile &&
-    !currentProfile.locationName &&
-    currentProfile.location &&
-    typeof currentProfile.location.latitude === 'number' &&
-    typeof currentProfile.location.longitude === 'number'
-  ) {
-    fetchLocationName(
-      currentProfile.location.latitude,
-      currentProfile.location.longitude
-    ).then((name) => {
-      setProfileQueue((prev) => {
-        const updated = [...prev];
-        updated[currentIndex] = { ...currentProfile, locationName: name };
-        return updated;
+  useEffect(() => {
+    saveSwipedIdsToStorage(swipedIds);
+  }, [swipedIds]);
+
+  // Swipe handler - removes first profile, adds more if queue short
+  const { pan, panResponder } = useSwipe(async (direction) => {
+    if (profileQueue.length === 0) return;
+
+    const swipedProfile = profileQueue[0];
+    setSwipedIds(prev => [...prev, swipedProfile.id]);
+
+    setProfileQueue(prev => prev.slice(1)); // Remove swiped profile from front
+
+    // Prefetch if queue running low (e.g., less than 3 profiles)
+    if (profileQueue.length <= 3) {
+      setLoading(true);
+      const moreProfiles = await fetchProfiles([...swipedIds, swipedProfile.id]);
+      const filtered = moreProfiles.filter(p => !profileQueue.some(q => q.id === p.id));
+      setProfileQueue(prev => [...prev, ...filtered]);
+      allProfiles.current = [...allProfiles.current, ...filtered];
+      setLoading(false);
+    }
+  });
+
+  // Fetch location name for current (first) profile if missing
+  useEffect(() => {
+    const currentProfile = profileQueue[0];
+    if (
+      currentProfile &&
+      !currentProfile.locationName &&
+      currentProfile.location &&
+      typeof currentProfile.location.latitude === 'number' &&
+      typeof currentProfile.location.longitude === 'number'
+    ) {
+      fetchLocationName(
+        currentProfile.location.latitude,
+        currentProfile.location.longitude
+      ).then((name) => {
+        setProfileQueue((prev) => {
+          const updated = [...prev];
+          updated[0] = { ...currentProfile, locationName: name };
+          return updated;
+        });
       });
-    });
-  }
-}, [currentIndex]);
-
+    }
+  }, [profileQueue]);
 
   if (loading) {
     return (
@@ -136,7 +213,7 @@ useEffect(() => {
     );
   }
 
-  const currentProfile = profileQueue[currentIndex];
+  const currentProfile = profileQueue[0];
 
   return (
     <View style={styles.container}>
@@ -175,9 +252,7 @@ useEffect(() => {
   );
 };
 
-// ... same styles as before
-
-
+// Styles unchanged
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -197,7 +272,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
     position: 'absolute',
-    bottom: 110,
+    bottom: 150,
   },
   profileImage: {
     width: "100%",

@@ -11,6 +11,7 @@ TouchableOpacity,
 } from 'react-native';
 import { getAuth } from 'firebase/auth';
 import { RootStackParamList } from '../types';
+import { router } from 'expo-router';
 
 type MainSwipeNavigationProp = StackNavigationProp<RootStackParamList, 'MainSwipe'>;
 
@@ -38,10 +39,10 @@ const renderSettingOption = ({ item }: { item: { id: string; title: string; desc
 
 const handleSignOut = async () => {
     try {
-    console.log("Attempting to sign out...");
-    await auth.signOut();
+        console.log("Attempting to sign out...");
+        await auth.signOut();
         console.log("Signed out successfully!");
-    navigation.replace('HomeScreen');
+        router.replace("/"); // Navigate to HomeScreen after sign out 
     } catch (error) {
     console.error("Error signing out: ", error);
     }
