@@ -23,4 +23,5 @@ export type RootStackParamList = {
   };
   MessagesScreen: undefined;  // Lägg till den här raden för MessagesScreen
   SettingsScreen: undefined;  // Lägg till den här raden för SettingsScreen
+  ProfileInfoScreen: undefined; // Lägg till den här raden för ProfileInfoScreen
 };

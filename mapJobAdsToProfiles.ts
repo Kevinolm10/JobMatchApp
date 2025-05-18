@@ -1,5 +1,5 @@
 import { JobAdProfile } from "./fetchJobAds"; // Adjust the path based on your folder structure
-import { Profile } from './app/MainSwipe'; // Adjust the path as needed
+import { Profile } from './frontend/components/SwipeAlgorithm'; // Adjust the path as needed
 
 export const mapJobAdsToProfiles = (jobAds: any[]): Profile[] => {
   return jobAds.map((jobAd) => {
@@ -16,6 +16,7 @@ export const mapJobAdsToProfiles = (jobAds: any[]): Profile[] => {
       phoneNumber: jobAd?.salary_type?.label || "N/A",
       workCommitment: jobAd?.employment_type?.label || "Not specified",
       image: jobAd?.logo_url || "https://cdn-icons-png.flaticon.com/512/847/847969.png",
+      id: ""
     };
 
     return profile;
@@ -25,3 +26,4 @@ export const mapJobAdsToProfiles = (jobAds: any[]): Profile[] => {
 
 
 
+export default mapJobAdsToProfiles;

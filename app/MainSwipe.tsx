@@ -1,41 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, Image, StyleSheet, Alert, ActivityIndicator, Animated } from 'react-native';
-import { getFirestore, collection, getDocs } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import { TouchableOpacity } from 'react-native';
 import Icon from 'react-native-vector-icons/FontAwesome';
-import { matchProfiles } from '../frontend/components/SwipeAlgorithm';
-import { fetchLocationName } from '../frontend/components/Location';
 import { useNavigation } from '@react-navigation/native';
 import { RootStackParamList } from '../types';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { mapJobAdsToProfiles } from '../mapJobAdsToProfiles';
-import getJobAds, { JobAdProfile } from '../fetchJobAds';
-import { useSwipe } from '../frontend/components/useSwipe';
+import { Profile } from '../frontend/components/SwipeAlgorithm';
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { fetchAndMatchProfiles } from '../frontend/components/SwipeAlgorithm';
+import { fetchLocationName } from '../frontend/components/Location';
+import { useSwipe } from '../frontend/components/useSwipe';
+import {
+  saveQueueToStorage,
+  loadQueueFromStorage,
+  saveSwipedIdsToStorage,
+  loadSwipedIdsFromStorage
+} from '../frontend/components/userStateStorage';
+import { JobAdProfile } from '../fetchJobAds';
 
 export type MainSwipeNavigationProp = StackNavigationProp<RootStackParamList, 'MainSwipe'>;
 
-export interface Profile {
-  id: string;
-  image: string;
-  firstName: string;
-  lastName: string;
-  email: string;
-  skills: string;
-  experience: string;
-  location: {
-    latitude: number;
-    longitude: number;
-  };
-  phoneNumber: string;
-  workCommitment: string;
-  locationName?: string; // optional field
-}
-
-const QUEUE_KEY = 'PROFILE_QUEUE_CACHE';
-const SWIPED_KEY = 'SWIPED_PROFILE_IDS';
 
 const MainSwipe: React.FC = () => {
   const navigation = useNavigation<MainSwipeNavigationProp>();
@@ -43,95 +28,9 @@ const MainSwipe: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [swipedIds, setSwipedIds] = useState<string[]>([]);
   const allProfiles = useRef<Profile[]>([]);
-  const db = getFirestore();
   const auth = getAuth();
   const cachedJobAds = useRef<JobAdProfile[] | null>(null);
 
-  const saveQueueToStorage = async (queue: Profile[]) => {
-    try {
-      await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
-    } catch (e) {
-      console.error('Failed to save queue', e);
-    }
-  };
-
-  const loadQueueFromStorage = async (): Promise<Profile[] | null> => {
-    try {
-      const json = await AsyncStorage.getItem(QUEUE_KEY);
-      return json ? JSON.parse(json) : null;
-    } catch (e) {
-      console.error('Failed to load queue', e);
-      return null;
-    }
-  };
-
-  const saveSwipedIdsToStorage = async (ids: string[]) => {
-    try {
-      await AsyncStorage.setItem(SWIPED_KEY, JSON.stringify(ids));
-    } catch (e) {
-      console.error('Failed to save swiped IDs', e);
-    }
-  };
-
-  const loadSwipedIdsFromStorage = async (): Promise<string[]> => {
-    try {
-      const json = await AsyncStorage.getItem(SWIPED_KEY);
-      return json ? JSON.parse(json) : [];
-    } catch (e) {
-      console.error('Failed to load swiped IDs', e);
-      return [];
-    }
-  };
-
-  const fetchProfiles = async (excludeIds: string[] = []) => {
-    try {
-      const user = auth.currentUser;
-      if (!user) {
-        console.warn("No authenticated user");
-        return [];
-      }
-
-      const usersCollection = collection(db, 'users');
-      const profileSnapshot = await getDocs(usersCollection);
-      const firestoreProfiles = profileSnapshot.docs.map((doc) => ({
-        ...(doc.data() as Profile),
-        id: doc.id,
-      }));
-
-      const userProfileDoc = profileSnapshot.docs.find((doc) => doc.data().email === user.email);
-      if (!userProfileDoc) {
-        console.warn("No user profile found for current user");
-        return [];
-      }
-
-      const userProfile = userProfileDoc.data() as Profile;
-
-      let jobAds: JobAdProfile[] = [];
-      if (cachedJobAds.current) {
-        jobAds = cachedJobAds.current;
-      } else {
-        jobAds = await getJobAds(userProfile.skills);
-        cachedJobAds.current = jobAds;
-      }
-
-      const jobProfiles = mapJobAdsToProfiles(jobAds);
-      const combinedProfiles = [...firestoreProfiles, ...jobProfiles];
-
-      // Match profiles using your algorithm
-      let matchedProfiles = matchProfiles(userProfile, combinedProfiles) as Profile[];
-
-      // Filter out swiped profiles
-      matchedProfiles = matchedProfiles.filter((p: Profile) => !excludeIds.includes(p.id));
-
-      return matchedProfiles;
-    } catch (error) {
-      console.error("Error fetching profiles: ", error);
-      Alert.alert("Error", "Unable to fetch profiles.");
-      return [];
-    }
-  };
-
-  // Initialize: load cached queue and swiped IDs or fetch fresh profiles
   useEffect(() => {
     const initialize = async () => {
       setLoading(true);
@@ -143,8 +42,11 @@ const MainSwipe: React.FC = () => {
         setSwipedIds(cachedSwiped);
         allProfiles.current = cachedQueue;
       } else {
-        const profiles = await fetchProfiles(cachedSwiped);
-        setProfileQueue(profiles.slice(0, 10)); // Load initial batch (adjust size if needed)
+        const user = auth.currentUser;
+        const { profiles, updatedCache } = await fetchAndMatchProfiles(user, cachedSwiped);
+        cachedJobAds.current = updatedCache;
+
+        setProfileQueue(profiles.slice(0, 10));
         allProfiles.current = profiles;
         setSwipedIds(cachedSwiped);
       }
@@ -153,7 +55,6 @@ const MainSwipe: React.FC = () => {
     initialize();
   }, []);
 
-  // Save queue and swiped IDs whenever they change
   useEffect(() => {
     if (profileQueue.length > 0) saveQueueToStorage(profileQueue);
   }, [profileQueue]);
@@ -162,19 +63,23 @@ const MainSwipe: React.FC = () => {
     saveSwipedIdsToStorage(swipedIds);
   }, [swipedIds]);
 
-  // Swipe handler - removes first profile, adds more if queue short
   const { pan, panResponder } = useSwipe(async (direction) => {
     if (profileQueue.length === 0) return;
 
     const swipedProfile = profileQueue[0];
     setSwipedIds(prev => [...prev, swipedProfile.id]);
+    setProfileQueue(prev => prev.slice(1));
 
-    setProfileQueue(prev => prev.slice(1)); // Remove swiped profile from front
-
-    // Prefetch if queue running low (e.g., less than 3 profiles)
     if (profileQueue.length <= 3) {
       setLoading(true);
-      const moreProfiles = await fetchProfiles([...swipedIds, swipedProfile.id]);
+      const user = auth.currentUser;
+      const { profiles: moreProfiles, updatedCache } = await fetchAndMatchProfiles(
+        user,
+        [...swipedIds, swipedProfile.id],
+        cachedJobAds.current
+      );
+      cachedJobAds.current = updatedCache;
+
       const filtered = moreProfiles.filter(p => !profileQueue.some(q => q.id === p.id));
       setProfileQueue(prev => [...prev, ...filtered]);
       allProfiles.current = [...allProfiles.current, ...filtered];
@@ -182,7 +87,6 @@ const MainSwipe: React.FC = () => {
     }
   });
 
-  // Fetch location name for current (first) profile if missing
   useEffect(() => {
     const currentProfile = profileQueue[0];
     if (
@@ -252,7 +156,6 @@ const MainSwipe: React.FC = () => {
   );
 };
 
-// Styles unchanged
 const styles = StyleSheet.create({
   container: {
     flex: 1,

@@ -24,14 +24,14 @@ const [notificationsEnabled, setNotificationsEnabled] = React.useState<boolean>(
 const handleToggleSwitch = () => setNotificationsEnabled(previousState => !previousState);
 
 const settingsOptions = [
-    { id: '1', title: 'Profile', description: 'Edit your profile details' },
+    { id: '1', title: 'ProfileInfoScreen', description: 'Edit your profile details' },
     { id: '2', title: 'Notifications', description: 'Manage your notifications' },
     { id: '3', title: 'Privacy', description: 'Control your privacy settings' },
     { id: '4', title: 'Help', description: 'Get help and support' },
 ];
 
 const renderSettingOption = ({ item }: { item: { id: string; title: string; description: string } }) => (
-    <TouchableOpacity style={styles.optionContainer} onPress={() => console.log(`Navigating to ${item.title}`)}>
+    <TouchableOpacity style={styles.optionContainer} onPress={() => navigation.navigate(item.title as never)}>
     <Text style={styles.optionTitle}>{item.title}</Text>
     <Text style={styles.optionDescription}>{item.description}</Text>
     </TouchableOpacity>

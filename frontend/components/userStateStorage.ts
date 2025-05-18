@@ -1,40 +1,40 @@
-import { getFirestore, collection, query, where, limit, startAfter, getDocs } from 'firebase/firestore';
+    import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const PAGE_SIZE = 10;
-const db = getFirestore();
+    const QUEUE_KEY = 'PROFILE_QUEUE_CACHE';
+    const SWIPED_KEY = 'SWIPED_PROFILE_IDS';
 
-import type { QueryDocumentSnapshot } from 'firebase/firestore';
-
-let lastVisible: QueryDocumentSnapshot | null = null;
-
-export async function fetchProfilesBatch(swipedIds: string[] = []) {
-try {
-    let q = query(
-    collection(db, 'profiles'),
-    limit(PAGE_SIZE)
-    );
-
-    if (lastVisible) {
-    q = query(
-        collection(db, 'profiles'),
-        startAfter(lastVisible),
-        limit(PAGE_SIZE)
-    );
+    export const saveQueueToStorage = async (queue: any[]) => {
+    try {
+        await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
+    } catch (e) {
+        console.error('Failed to save queue', e);
     }
+    };
 
-    // Filter out swiped profiles by ID
-    // Firestore doesn’t allow 'not-in' with arrays bigger than 10, so might need client filtering
-    const snapshot = await getDocs(q);
-    lastVisible = snapshot.docs[snapshot.docs.length - 1];
+    export const loadQueueFromStorage = async (): Promise<any[] | null> => {
+    try {
+        const json = await AsyncStorage.getItem(QUEUE_KEY);
+        return json ? JSON.parse(json) : null;
+    } catch (e) {
+        console.error('Failed to load queue', e);
+        return null;
+    }
+    };
 
-    let profiles = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    export const saveSwipedIdsToStorage = async (ids: string[]) => {
+    try {
+        await AsyncStorage.setItem(SWIPED_KEY, JSON.stringify(ids));
+    } catch (e) {
+        console.error('Failed to save swiped IDs', e);
+    }
+    };
 
-    // Client-side filter for swiped IDs
-    profiles = profiles.filter(p => !swipedIds.includes(p.id));
-
-    return profiles;
-} catch (e) {
-    console.error('Error fetching profiles', e);
-    return [];
-}
-}
+    export const loadSwipedIdsFromStorage = async (): Promise<string[]> => {
+    try {
+        const json = await AsyncStorage.getItem(SWIPED_KEY);
+        return json ? JSON.parse(json) : [];
+    } catch (e) {
+        console.error('Failed to load swiped IDs', e);
+        return [];
+    }
+    };

@@ -15,6 +15,7 @@ import MainSwipe from "./app/MainSwipe";
 import BusinessSignIn from "./app/BusinessSignIn";
 import MessagesScreen from "./app/MessagesScreen"; // Importera MessagesScreen
 import SettingsScreen from "./app/SettingsScreen"; // Import SettingsScreen
+import ProfileInfoScreen from "./app/ProfileInfoScreen"; // Import ProfileInfoScreen
 
 // Import types
 import { RootStackParamList } from './types'; 
@@ -52,6 +53,15 @@ export default function App() {
         <Stack.Screen 
           name="SettingsScreen" 
           component={SettingsScreen} 
+          options={{
+            headerShown: true,
+            headerLeft: () => null, // Hide back button
+          }}
+        />
+
+        <Stack.Screen
+          name="ProfileInfoScreen"
+          component={ProfileInfoScreen}
           options={{
             headerShown: true,
             headerLeft: () => null, // Hide back button
