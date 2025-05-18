@@ -3,6 +3,7 @@ import { initializeApp, getApp, getApps } from 'firebase/app';
 import { firebaseConfig } from './firebaseConfig'; // Ensure the import path is correct
 import { getFirestore, collection, query, where, getDocs } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage'; // Import AsyncStorage for React Native
+import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 
 // Check if Firebase is already initialized, if not, initialize it
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
@@ -10,6 +11,9 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 // Initialize Firebase Auth and Firestore
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Google Auth Provider
+const googleProvider = new GoogleAuthProvider();
 
 // Set persistence using AsyncStorage for React Native
 setPersistence(auth, browserLocalPersistence);
@@ -71,5 +75,20 @@ export const signInBusinessUser = async (email: string, password: string) => {
     throw error; // Rethrow the error to be handled by the caller
   }
 };
+
+// Function to sign in with Google
+export const signInWithGoogle = async () => {
+  try {
+    const provider = new GoogleAuthProvider();
+    const result = await signInWithPopup(auth, provider);
+    const user = result.user;
+    console.log('User signed in with Google:', user);
+    return user; // Return user for further use
+  } catch (error) {
+    console.error('Error signing in with Google:', error);
+    throw error; // Rethrow error to be handled by caller
+  }
+};
+  
 
 export { auth, db };

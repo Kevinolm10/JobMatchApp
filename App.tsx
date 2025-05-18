@@ -48,6 +48,16 @@ export default function App() {
             headerLeft: () => null, // Hide back arrow
           }}
         />
+
+        <Stack.Screen 
+          name="SettingsScreen" 
+          component={SettingsScreen} 
+          options={{
+            headerShown: true,
+            headerLeft: () => null, // Hide back button
+          }}
+        />
+
         
         {/* Auth Screens with Back Arrow */}
         {(

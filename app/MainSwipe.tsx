@@ -29,22 +29,35 @@ export interface Profile {
   };
   phoneNumber: string;
   workCommitment: string;
+  locationName?: string; // optional field
 }
 
 const MainSwipe: React.FC = () => {
   const navigation = useNavigation<MainSwipeNavigationProp>();
-  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profileQueue, setProfileQueue] = useState<Profile[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
+  const allProfiles = useRef<Profile[]>([]);
   const db = getFirestore();
   const auth = getAuth();
   const cachedJobAds = useRef<JobAdProfile[] | null>(null);
 
-  const { pan, panResponder } = useSwipe(() => setCurrentIndex((prev) => prev + 1));
+  const { pan, panResponder } = useSwipe((direction) => {
+    setCurrentIndex((prev) => {
+      const next = prev + 1;
+      if (next + 1 < allProfiles.current.length) {
+        setProfileQueue((prevQueue) => [
+          ...prevQueue,
+          allProfiles.current[next + 1],
+        ]);
+      }
+      return next;
+    });
+  });
 
   const fetchProfiles = async () => {
     try {
-      const user = getAuth().currentUser;
+      const user = auth.currentUser;
       if (!user) {
         console.warn("No authenticated user");
         return;
@@ -73,17 +86,11 @@ const MainSwipe: React.FC = () => {
       const jobProfiles = mapJobAdsToProfiles(jobAds);
       const combinedProfiles = [...firestoreProfiles, ...jobProfiles];
 
-      await Promise.all(
-        combinedProfiles.map(async (profile) => {
-          if (profile.location && typeof profile.location !== "string") {
-            const locationName = await fetchLocationName(profile.location.latitude, profile.location.longitude);
-            (profile as any).locationName = locationName;
-          }
-        })
-      );
-
       const matchedProfiles = matchProfiles(userProfile, combinedProfiles);
-      setProfiles(matchedProfiles);
+      allProfiles.current = matchedProfiles;
+
+      // Only load the first 2 profiles
+      setProfileQueue(matchedProfiles.slice(0, 2));
     } catch (error) {
       console.error("Error fetching profiles: ", error);
       Alert.alert("Error", "Unable to fetch profiles.");
@@ -96,6 +103,31 @@ const MainSwipe: React.FC = () => {
     fetchProfiles();
   }, []);
 
+  // Fetch location only when visible
+useEffect(() => {
+  const currentProfile = profileQueue[currentIndex];
+
+  if (
+    currentProfile &&
+    !currentProfile.locationName &&
+    currentProfile.location &&
+    typeof currentProfile.location.latitude === 'number' &&
+    typeof currentProfile.location.longitude === 'number'
+  ) {
+    fetchLocationName(
+      currentProfile.location.latitude,
+      currentProfile.location.longitude
+    ).then((name) => {
+      setProfileQueue((prev) => {
+        const updated = [...prev];
+        updated[currentIndex] = { ...currentProfile, locationName: name };
+        return updated;
+      });
+    });
+  }
+}, [currentIndex]);
+
+
   if (loading) {
     return (
       <View style={styles.container}>
@@ -104,7 +136,7 @@ const MainSwipe: React.FC = () => {
     );
   }
 
-  const currentProfile = profiles[currentIndex];
+  const currentProfile = profileQueue[currentIndex];
 
   return (
     <View style={styles.container}>
@@ -116,10 +148,9 @@ const MainSwipe: React.FC = () => {
           <Image source={{ uri: currentProfile.image }} style={styles.profileImage} />
           <View style={styles.cardInfo}>
             <Text style={styles.name}>{currentProfile.firstName} {currentProfile.lastName}</Text>
-            <Text style={styles.email}>{currentProfile.email}</Text>
             <Text style={styles.experience}>Experience: {currentProfile.experience || "Not specified"}</Text>
             <Text style={styles.skills}>Skills: {currentProfile.skills || "N/A"}</Text>
-            <Text style={styles.location}>Location: {(currentProfile as any).locationName || "Unknown"}</Text>
+            <Text style={styles.location}>Location: {currentProfile.locationName || "Loading..."}</Text>
             <Text style={styles.phone}>Phone: {currentProfile.phoneNumber || "N/A"}</Text>
             <Text style={styles.workCommitment}>Work Commitment: {currentProfile.workCommitment || "N/A"}</Text>
           </View>
@@ -144,6 +175,9 @@ const MainSwipe: React.FC = () => {
   );
 };
 
+// ... same styles as before
+
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -162,7 +196,8 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
-    position: 'absolute'
+    position: 'absolute',
+    bottom: 110,
   },
   profileImage: {
     width: "100%",
