@@ -6,46 +6,44 @@ export default {
     slug: "frontend",
     version: "1.0.0",
     orientation: "portrait",
-    icon: "./assets/images/icon.png",
+    icon: "./frontend/assets/images/icon.png", // <--- fix here
     scheme: "myapp",
+    jsEngine: "hermes",
     userInterfaceStyle: "automatic",
     newArchEnabled: true,
     ios: {
-      supportsTablet: true
+      bundleIdentifier: "com.anonymous.frontend",
+      supportsTablet: true,
+      icon: "./frontend/assets/images/icon.png", // <--- fix here
     },
     android: {
       adaptiveIcon: {
-        foregroundImage: "./assets/images/adaptive-icon.png",
-        backgroundColor: "#ffffff"
-      }
+        foregroundImage: "./frontend/assets/images/foreground.png", // <--- fix here
+        backgroundImage: "./frontend/assets/images/background.png", // <--- fix here
+      },
+      package: "com.anonymous.frontend",
     },
     web: {
       bundler: "metro",
-      output: "static"
+      output: "static",
     },
     plugins: [
       "expo-router",
+      "expo-font",
       [
         "expo-splash-screen",
         {
-          image: "./assets/images/splash-icon.png",
+          image: "./frontend/assets/images/splash.png", // <--- fix here
           imageWidth: 200,
           resizeMode: "contain",
-          backgroundColor: "#ffffff"
-        }
-      ]
+          backgroundColor: "#ffffff",
+        },
+      ],
     ],
     experiments: {
-      typedRoutes: true
+      typedRoutes: true,
     },
     extra: {
-      FIREBASE_API_KEY: process.env.FIREBASE_API_KEY,
-      FIREBASE_AUTH_DOMAIN: process.env.FIREBASE_AUTH_DOMAIN,
-      FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
-      FIREBASE_STORAGE_BUCKET: process.env.FIREBASE_STORAGE_BUCKET,
-      FIREBASE_MESSAGING_SENDER_ID: process.env.FIREBASE_MESSAGING_SENDER_ID,
-      FIREBASE_APP_ID: process.env.FIREBASE_APP_ID,
-      FIREBASE_MEASUREMENT_ID: process.env.FIREBASE_MEASUREMENT_ID
-    }
-  }
+    },
+  },
 };

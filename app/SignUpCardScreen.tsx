@@ -1,12 +1,22 @@
 import React, { useState } from "react";
-import { View, Text, TextInput, Button, TouchableOpacity, Image, StyleSheet, Alert, Dimensions } from "react-native";
+import {
+  View,
+  Text,
+  TextInput,
+  Button,
+  TouchableOpacity,
+  Image,
+  StyleSheet,
+  Alert,
+  Dimensions,
+} from "react-native";
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
-import { getFirestore, doc, updateDoc } from "firebase/firestore";
-import { useNavigation, useRoute, RouteProp } from "@react-navigation/native"; 
-import { RootStackParamList } from "../types"; 
+import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
+import { RootStackParamList } from "../types";
 import { StackNavigationProp } from "@react-navigation/stack";
 import { StatusBar } from 'expo-status-bar';
+import firestore from '@react-native-firebase/firestore'; // ✅ Native SDK Firestore
 
 type SignUpCardScreenNavigationProp = StackNavigationProp<RootStackParamList, 'SignUpCardScreen'>;
 type SignUpCardScreenRouteProp = RouteProp<RootStackParamList, 'SignUpCardScreen'>;
@@ -27,9 +37,6 @@ const SignUpCardScreen: React.FC = () => {
   const [skills, setSkills] = useState("");
   const [experience, setExperience] = useState("");
 
-  const db = getFirestore();
-
-  // Function to pick image from the device
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -43,7 +50,6 @@ const SignUpCardScreen: React.FC = () => {
     }
   };
 
-  // Function to get the user's current location and reverse geocode it
   const getUserLocation = async () => {
     let { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') {
@@ -62,11 +68,10 @@ const SignUpCardScreen: React.FC = () => {
     }
   };
 
-  // Handle saving additional data
   const handleFinish = async () => {
     try {
-      const userRef = doc(db, "users", userId);
-      await updateDoc(userRef, {
+      const userRef = firestore().collection("users").doc(userId);
+      await userRef.update({
         phoneNumber,
         address,
         workCommitment,
@@ -85,15 +90,11 @@ const SignUpCardScreen: React.FC = () => {
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
-
-      {/* Background Overlay */}
       <View style={styles.backgroundOverlay} />
 
-      {/* Content */}
       <View style={styles.content}>
         <Text style={styles.title}>Additional Information</Text>
 
-        {/* Image Picker */}
         <TouchableOpacity onPress={pickImage} style={styles.imagePicker}>
           {image ? (
             <Image source={{ uri: image }} style={styles.image} />
@@ -102,13 +103,15 @@ const SignUpCardScreen: React.FC = () => {
           )}
         </TouchableOpacity>
 
-        {/* Work Commitment */}
         <Text style={styles.label}>How much do you want to work?</Text>
         <View style={styles.workCommitmentContainer}>
           {["25%", "50%", "75%", "100%"].map((commitment) => (
             <TouchableOpacity
               key={commitment}
-              style={[styles.commitmentButton, workCommitment === commitment && styles.selectedCommitment]}
+              style={[
+                styles.commitmentButton,
+                workCommitment === commitment && styles.selectedCommitment,
+              ]}
               onPress={() => setWorkCommitment(commitment)}
             >
               <Text style={styles.commitmentText}>{commitment}</Text>
@@ -116,49 +119,43 @@ const SignUpCardScreen: React.FC = () => {
           ))}
         </View>
 
-        {/* Location */}
         <Button title="Get Location" onPress={getUserLocation} />
         {locationString && (
           <Text style={styles.locationText}>Location: {locationString}</Text>
         )}
 
-        {/* Skills */}
         <TextInput
           style={styles.input}
           placeholder="Skills"
           placeholderTextColor="#aaa"
           value={skills}
-          onChangeText={(text) => setSkills(text)}
+          onChangeText={setSkills}
         />
 
-        {/* Experience */}
         <TextInput
           style={styles.input}
           placeholder="Experience"
           placeholderTextColor="#aaa"
           value={experience}
-          onChangeText={(text) => setExperience(text)}
+          onChangeText={setExperience}
         />
 
-        {/* Phone Number */}
         <TextInput
           style={styles.input}
           placeholder="Phone Number"
           placeholderTextColor="#aaa"
           value={phoneNumber}
-          onChangeText={(text) => setPhoneNumber(text)}
+          onChangeText={setPhoneNumber}
         />
 
-        {/* Address */}
         <TextInput
           style={styles.input}
           placeholder="Address"
           placeholderTextColor="#aaa"
           value={address}
-          onChangeText={(text) => setAddress(text)}
+          onChangeText={setAddress}
         />
 
-        {/* Finish Button */}
         <TouchableOpacity style={styles.button} onPress={handleFinish}>
           <Text style={styles.buttonText}>Finish</Text>
         </TouchableOpacity>
@@ -178,7 +175,7 @@ const styles = StyleSheet.create({
     left: 0,
     width: width,
     height: height,
-    backgroundColor: '#8456ad', // Or use a background image
+    backgroundColor: '#8456ad',
     zIndex: -1,
   },
   content: {
@@ -186,7 +183,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 30,
-    paddingTop: 30, 
+    paddingTop: 30,
   },
   title: {
     fontSize: 32,

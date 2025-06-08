@@ -1,5 +1,5 @@
 import { StackNavigationProp } from '@react-navigation/stack';
-import { NavigationProp, useNavigation } from '@react-navigation/native'; 
+import { useNavigation } from '@react-navigation/native';
 import React from 'react';
 import { View, Text, FlatList, TextInput, Button, StyleSheet, TouchableOpacity, TouchableWithoutFeedback, Keyboard } from 'react-native';
 import { RootStackParamList } from '../types';
