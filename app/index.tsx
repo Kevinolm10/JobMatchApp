@@ -206,7 +206,7 @@ const HomeScreen: React.FC = () => {
           isMuted
           isLooping
           resizeMode={ResizeMode.COVER}
-          onError={(error) => {
+          onError={(error: unknown) => {
             console.warn('Video error:', error);
             setShowVideo(false);
           }}
