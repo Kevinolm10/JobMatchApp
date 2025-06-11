@@ -13,7 +13,6 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Animated,
-  Pressable,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../types';
@@ -250,7 +249,7 @@ export const SignInScreen: React.FC = () => {
   ), [shakeAnim, showPassword, loading]);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <><SafeAreaView style={styles.safeArea}></SafeAreaView><View style={styles.container}>
       <StatusBar style="light" backgroundColor="#8456ad" />
 
       {/* Background */}
@@ -312,8 +311,7 @@ export const SignInScreen: React.FC = () => {
                 error={errors.email}
                 inputRef={emailRef}
                 onSubmitEditing={() => passwordRef.current?.focus()}
-                icon="email"
-              />
+                icon="email" />
 
               <EnhancedInput
                 placeholder="Lösenord"
@@ -323,8 +321,7 @@ export const SignInScreen: React.FC = () => {
                 error={errors.password}
                 inputRef={passwordRef}
                 onSubmitEditing={handleSignIn}
-                icon="lock"
-              />
+                icon="lock" />
 
               {/* Forgot Password Link */}
               <TouchableOpacity
@@ -369,14 +366,19 @@ export const SignInScreen: React.FC = () => {
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View></>
+
   );
 };
 
 const styles = StyleSheet.create({
+  safeArea: {
+    backgroundColor: '#8456ad',
+  },
   container: {
     flex: 1,
     backgroundColor: '#8456ad',
+
   },
   backgroundOverlay: {
     ...StyleSheet.absoluteFillObject,

@@ -25,7 +25,7 @@ import { auth } from '../frontend/services/firebaseConfig';
 
 type MessagesNavigationProp = StackNavigationProp<RootStackParamList, 'MessagesScreen'>;
 
-const { width, height } = Dimensions.get('window');
+Dimensions.get('window');
 
 // Enhanced interfaces for better type safety
 interface Match {

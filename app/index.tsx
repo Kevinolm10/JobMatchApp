@@ -6,11 +6,12 @@ import {
   Alert,
   TouchableOpacity,
   Dimensions,
-  SafeAreaView,
   Image,
   ActivityIndicator,
   StatusBar,
   Animated,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
@@ -19,8 +20,14 @@ import { Video, ResizeMode } from 'expo-av';
 import { LinearGradient } from 'expo-linear-gradient';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { useGoogleAuth } from '../frontend/components/useGoogleAuth';
-import { signInWithEmailAndPassword, onAuthStateChanged, User } from 'firebase/auth';
-import { auth } from '../frontend/services/firebaseConfig';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import {
+  auth,
+  signInUser,
+  forceRefreshConnection
+} from '../frontend/services/firebaseAuth';
+import NetInfo from '@react-native-community/netinfo';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 const google = require('../frontend/assets/images/google.png');
 
@@ -39,13 +46,47 @@ const HomeScreen: React.FC = () => {
   const { promptAsync } = useGoogleAuth();
 
   // Enhanced state management
-  const [signingIn, setSigningIn] = useState<string | null>(null); // Track which button is loading
+  const [signingIn, setSigningIn] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showVideo, setShowVideo] = useState<boolean>(true);
+  const [isConnected, setIsConnected] = useState<boolean>(true);
+  const [retryCount, setRetryCount] = useState<number>(0);
 
   // Animation values
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const slideAnim = React.useRef(new Animated.Value(50)).current;
+
+  // Monitor network connectivity
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener(state => {
+      setIsConnected(state.isConnected ?? false);
+
+      if (state.isConnected && retryCount > 0) {
+        // Network came back online, refresh Firebase connection
+        forceRefreshConnection().catch(console.error);
+      }
+    });
+
+    return unsubscribe;
+  }, [retryCount]);
+
+  // Monitor app state changes
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        // App became active, check network and refresh if needed
+        NetInfo.fetch().then(state => {
+          if (state.isConnected) {
+            forceRefreshConnection().catch(console.error);
+          }
+        });
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   // Monitor auth state
   useEffect(() => {
@@ -58,6 +99,19 @@ const HomeScreen: React.FC = () => {
     });
     return unsubscribe;
   }, [navigation]);
+
+  // Use focus effect to refresh connection when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      // Check network status when screen comes into focus
+      NetInfo.fetch().then(state => {
+        setIsConnected(state.isConnected ?? false);
+        if (state.isConnected) {
+          forceRefreshConnection().catch(console.error);
+        }
+      });
+    }, [])
+  );
 
   // Entrance animations
   useEffect(() => {
@@ -75,48 +129,82 @@ const HomeScreen: React.FC = () => {
     ]).start();
   }, [fadeAnim, slideAnim]);
 
-  // Enhanced dev sign in with better error handling
+  // Enhanced dev sign in with better error handling and retry logic
   const handleDevSignIn = useCallback(async () => {
-    if (signingIn) return; // Prevent multiple calls
+    if (signingIn) return;
+
+    // Check network first
+    if (!isConnected) {
+      Alert.alert(
+        'No Internet Connection',
+        'Please check your internet connection and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
 
     setSigningIn('dev');
+    setRetryCount(prev => prev + 1);
+
     try {
       console.log('🔐 Dev sign in with:', DEV_USER.email);
 
-      const userCredential = await signInWithEmailAndPassword(
-        auth,
-        DEV_USER.email,
-        DEV_USER.password
-      );
+      // Use the enhanced signInUser function with retry logic
+      const result = await signInUser(DEV_USER.email, DEV_USER.password);
 
       console.log('✅ Dev sign in successful');
-      navigation.navigate('MainSwipe', { userId: userCredential.user.uid });
+
+      // Reset retry count on success
+      setRetryCount(0);
+
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'MainSwipe', params: { userId: result.user.uid } }],
+      });
 
     } catch (error: any) {
       console.error('❌ Dev sign in error:', error);
 
-      const errorMessages: { [key: string]: string } = {
-        'auth/user-not-found': 'Test user not found. Please contact developer.',
-        'auth/wrong-password': 'Invalid test credentials.',
-        'auth/network-request-failed': 'Network error. Check your connection.',
-        'auth/too-many-requests': 'Too many attempts. Please wait and try again.',
-      };
-
-      const message = errorMessages[error.code] || error.message || 'Development sign-in failed.';
-
-      Alert.alert(
-        'Dev Sign-In Failed',
-        message,
-        [{ text: 'OK', style: 'default' }]
-      );
+      // Check if it's a network error
+      if (error.code === 'auth/network-request-failed' || error.code === 'network-unavailable') {
+        Alert.alert(
+          'Network Error',
+          'Unable to connect to Firebase. Please check your internet connection and try again.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Retry',
+              onPress: () => {
+                setTimeout(handleDevSignIn, 1000);
+              }
+            }
+          ]
+        );
+      } else {
+        Alert.alert(
+          'Dev Sign-In Failed',
+          error.message || 'An unexpected error occurred.',
+          [{ text: 'OK', style: 'default' }]
+        );
+      }
     } finally {
       setSigningIn(null);
     }
-  }, [navigation, signingIn]);
+  }, [navigation, signingIn, isConnected]);
 
   // Enhanced Google sign in
   const handleGoogleSignIn = useCallback(async () => {
     if (signingIn) return;
+
+    // Check network first
+    if (!isConnected) {
+      Alert.alert(
+        'No Internet Connection',
+        'Please check your internet connection and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
 
     setSigningIn('google');
     try {
@@ -132,13 +220,39 @@ const HomeScreen: React.FC = () => {
     } finally {
       setSigningIn(null);
     }
-  }, [promptAsync, signingIn]);
+  }, [promptAsync, signingIn, isConnected]);
 
   // Enhanced navigation handlers
   const handleNavigate = useCallback((screen: keyof RootStackParamList) => {
     if (signingIn) return; // Prevent navigation during sign in
+
+    // Check network before navigating to sign in screens
+    if ((screen === 'SignInScreen' || screen === 'SignUpScreen') && !isConnected) {
+      Alert.alert(
+        'No Internet Connection',
+        'You need an internet connection to sign in. Please check your connection and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     navigation.navigate(screen as any);
-  }, [navigation, signingIn]);
+  }, [navigation, signingIn, isConnected]);
+
+  const handleBusinessSignIn = useCallback(() => {
+    if (signingIn) return;
+
+    if (!isConnected) {
+      Alert.alert(
+        'No Internet Connection',
+        'You need an internet connection to sign in. Please check your connection and try again.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
+    navigation.navigate('BusinessSignIn');
+  }, [navigation, signingIn, isConnected]);
 
   // Enhanced button component
   const AnimatedButton = useCallback(({
@@ -194,7 +308,7 @@ const HomeScreen: React.FC = () => {
   ), [signingIn]);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
       {/* Background Video */}
@@ -218,7 +332,6 @@ const HomeScreen: React.FC = () => {
         colors={['rgba(132, 86, 173, 0.4)', 'rgba(0, 0, 0, 0.6)', 'rgba(132, 86, 173, 0.8)']}
         style={styles.overlay}
       />
-
       {/* Content */}
       <Animated.View
         style={[
@@ -238,6 +351,14 @@ const HomeScreen: React.FC = () => {
           </Text>
         </View>
 
+        {/* Network Status Indicator */}
+        {!isConnected && (
+          <View style={styles.networkBanner}>
+            <Icon name="wifi-off" size={20} color="#fff" />
+            <Text style={styles.networkText}>No Internet Connection</Text>
+          </View>
+        )}
+
         {/* Action Buttons */}
         <View style={styles.buttonContainer}>
           <AnimatedButton
@@ -255,7 +376,7 @@ const HomeScreen: React.FC = () => {
 
           <AnimatedButton
             title="Företagsinlogg"
-            onPress={() => handleNavigate('BusinessSignIn')}
+            onPress={handleBusinessSignIn}
             icon="business"
           />
 
@@ -278,6 +399,7 @@ const HomeScreen: React.FC = () => {
               textStyle={styles.devButtonText}
             />
           )}
+
         </View>
 
         {/* Footer */}
@@ -299,21 +421,35 @@ const HomeScreen: React.FC = () => {
           </Text>
         </View>
       )}
-    </SafeAreaView>
+
+      {/* Retry Count Indicator (for debugging) */}
+      {__DEV__ && retryCount > 0 && (
+        <View style={styles.retryIndicator}>
+          <Text style={styles.retryIndicatorText}>
+            Retry attempts: {retryCount}
+          </Text>
+        </View>
+      )}
+    </View>
+
   );
 };
 
 const styles = StyleSheet.create({
+
   container: {
     flex: 1,
     backgroundColor: '#8456ad',
+    // Remove paddingTop: StatusBar.currentHeight || 50,
   },
   backgroundVideo: {
     position: 'absolute',
     top: 0,
     left: 0,
-    width,
-    height: height + 50, // Add extra height to cover notch
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
   },
   overlay: {
     position: 'absolute',
@@ -321,7 +457,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    height: height + 50, // Add extra height to cover notch
   },
   content: {
     flex: 1,
@@ -359,6 +494,22 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.3)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 2,
+  },
+  networkBanner: {
+    backgroundColor: 'rgba(255, 0, 0, 0.8)',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginVertical: 8,
+  },
+  networkText: {
+    color: '#fff',
+    marginLeft: 8,
+    fontSize: 14,
+    fontWeight: '600',
   },
   buttonContainer: {
     alignItems: 'center',
@@ -448,6 +599,18 @@ const styles = StyleSheet.create({
   },
   userIndicatorText: {
     color: '#fff',
+    fontSize: 10,
+  },
+  retryIndicator: {
+    position: 'absolute',
+    top: 100,
+    right: 16,
+    backgroundColor: 'rgba(255, 193, 7, 0.7)',
+    padding: 8,
+    borderRadius: 8,
+  },
+  retryIndicatorText: {
+    color: '#000',
     fontSize: 10,
   },
 });

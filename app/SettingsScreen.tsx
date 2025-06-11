@@ -20,6 +20,8 @@ import { signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { auth } from '../frontend/services/firebaseConfig';
 import { clearAllCache } from '../frontend/components/userStateStorage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import firestore from '@react-native-firebase/firestore';
+import { resetPagination } from '../frontend/components/SwipeAlgorithm'; // Update this path
 
 type MainSwipeNavigationProp = StackNavigationProp<RootStackParamList, 'MainSwipe'>;
 
@@ -31,6 +33,18 @@ interface SettingOption {
     route?: string;
     action?: () => void;
 }
+
+// Global store for active Firestore listeners
+const activeListeners = new Set<() => void>();
+
+// Helper to register listeners for cleanup
+export const registerListener = (unsubscribe: () => void) => {
+    activeListeners.add(unsubscribe);
+    return () => {
+        unsubscribe();
+        activeListeners.delete(unsubscribe);
+    };
+};
 
 const SettingsScreen: React.FC = () => {
     const navigation = useNavigation<MainSwipeNavigationProp>();
@@ -197,6 +211,44 @@ const SettingsScreen: React.FC = () => {
         }
     }, [navigation]);
 
+    // NEW: Clean up all Firestore listeners
+    const cleanupFirestoreListeners = useCallback(async (): Promise<void> => {
+        console.log(`👂 Cleaning up ${activeListeners.size} active Firestore listeners...`);
+
+        activeListeners.forEach(unsubscribe => {
+            try {
+                unsubscribe();
+            } catch (e) {
+                console.warn('Error unsubscribing listener:', e);
+            }
+        });
+
+        activeListeners.clear();
+        console.log('✅ All Firestore listeners cleaned up');
+    }, []);
+
+    // NEW: Clean up Firestore connection
+    const cleanupFirestoreConnection = useCallback(async (): Promise<void> => {
+        try {
+            console.log('🔥 Cleaning up Firestore connection...');
+
+            // Clear Firestore cache
+            await firestore().clearPersistence();
+            console.log('✅ Cleared Firestore persistence');
+
+            // Terminate Firestore connection
+            await firestore().terminate();
+            console.log('✅ Terminated Firestore connection');
+
+            // Small delay to ensure cleanup
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+        } catch (error) {
+            console.warn('⚠️ Firestore cleanup warning (non-critical):', error);
+            // Don't throw - this is non-critical for sign out
+        }
+    }, []);
+
     // Helper functions for comprehensive cleanup
     const clearAllUserCache = useCallback(async (): Promise<void> => {
         try {
@@ -293,11 +345,26 @@ const SettingsScreen: React.FC = () => {
                             await clearSensitiveData();
                             console.log('🔒 Cleared sensitive data');
 
-                            // Step 4: Sign out from Firebase (this should be last)
+                            // Step 4: Clean up all Firestore listeners
+                            await cleanupFirestoreListeners();
+                            console.log('👂 Cleaned up Firestore listeners');
+
+                            // Step 5: Reset pagination states
+                            resetPagination();
+                            console.log('📄 Reset pagination states');
+
+                            // Step 6: Clean up Firestore connection
+                            await cleanupFirestoreConnection();
+                            console.log('🔥 Cleaned up Firestore connection');
+
+                            // Step 7: Sign out from Firebase (this should be last)
                             await signOut(auth);
                             console.log('✅ Firebase sign out successful');
 
-                            // Step 5: Navigate to auth screen immediately
+                            // Step 8: Small delay to ensure all cleanup is complete
+                            await new Promise(resolve => setTimeout(resolve, 200));
+
+                            // Step 9: Navigate to auth screen
                             router.replace('/');
 
                             console.log('🎉 Sign out completed successfully');
@@ -352,7 +419,7 @@ const SettingsScreen: React.FC = () => {
                 }
             }
         );
-    }, [clearAllUserCache, cancelPendingOperations, clearSensitiveData]);
+    }, [clearAllUserCache, cancelPendingOperations, clearSensitiveData, cleanupFirestoreListeners, cleanupFirestoreConnection]);
 
     // Enhanced render function for settings options
     const renderSettingOption = useCallback(({ item }: { item: SettingOption }) => (

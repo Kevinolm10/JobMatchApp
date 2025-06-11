@@ -9,7 +9,13 @@ import { collection, query, where, limit, getDocs } from 'firebase/firestore';
 
 import { auth, firestore } from '../frontend/services/firebaseConfig';
 import { RootStackParamList } from '../types';
-import { Profile } from '../frontend/components/SwipeAlgorithm';
+// UPDATED IMPORTS - Replace old Profile with new types
+import {
+  MatchableProfile,
+  UserProfile,
+  BusinessProfile,
+  JobProfile,
+} from '../frontend/types/profiles';
 import { fetchAndMatchProfiles, resetPagination, getPaginationStatus } from '../frontend/components/SwipeAlgorithm';
 import { fetchLocationName } from '../frontend/components/Location';
 import { useSwipe } from '../frontend/components/useSwipe';
@@ -26,26 +32,26 @@ import { JobAdProfile, debugJobAdsAPI, quickJobAdsTest } from '../frontend/servi
 export type MainSwipeNavigationProp = StackNavigationProp<RootStackParamList, 'MainSwipe'>;
 
 // Enhanced constants for better performance
-const PREFETCH_THRESHOLD = 2; // Reduced to trigger earlier
-const MAX_QUEUE_SIZE = 100; // Increased for better buffering
+const PREFETCH_THRESHOLD = 2;
+const MAX_QUEUE_SIZE = 100;
 const LOCATION_FETCH_TIMEOUT = 8000;
 const DEBOUNCE_DELAY = 300;
-const MIN_PROFILES_BEFORE_FETCH = 30; // Ensure we have enough profiles
+const MIN_PROFILES_BEFORE_FETCH = 30;
 
 export const MainSwipe: React.FC = () => {
   const navigation = useNavigation<MainSwipeNavigationProp>();
 
-  // Enhanced state management
+  // UPDATED STATE - Use MatchableProfile instead of Profile
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
-  const [profileQueue, setProfileQueue] = useState<Profile[]>([]);
+  const [profileQueue, setProfileQueue] = useState<MatchableProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [swipedIds, setSwipedIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [prefetching, setPrefetching] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
 
-  // Refs for performance and cleanup
-  const allProfiles = useRef<Profile[]>([]);
+  // UPDATED REFS
+  const allProfiles = useRef<MatchableProfile[]>([]);
   const cachedJobAds = useRef<JobAdProfile[] | null>(null);
   const locationController = useRef<AbortController | null>(null);
   const isInitialized = useRef(false);
@@ -56,7 +62,65 @@ export const MainSwipe: React.FC = () => {
   // Memoized current profile to prevent unnecessary re-renders
   const currentProfile = useMemo(() => profileQueue[0], [profileQueue]);
 
-  // Enhanced auth state listener
+  // Helper function to get profile display data using new structure
+  const getProfileDisplayData = useCallback((profile: MatchableProfile) => {
+    if (!profile) return null;
+
+    switch (profile.source) {
+      case 'user':
+        const user = profile as UserProfile;
+        return {
+          name: `${user.firstName} ${user.lastName}`,
+          image: user.image,
+          skills: user.skills.map(s => s.name).join(', '),
+          experience: user.experienceLevel,
+          workCommitment: user.workCommitment.join(', '),
+          location: user.location,
+          locationName: user.location.name,
+          email: user.email
+        };
+
+      case 'business':
+        const business = profile as BusinessProfile;
+        return {
+          name: business.companyName,
+          image: business.image,
+          skills: business.typicalRequirements.skills.map(s => s.name).join(', '),
+          experience: `${business.industry} • ${business.companySize} company`,
+          workCommitment: business.workArrangement.join(', '),
+          location: business.location,
+          locationName: business.location.name,
+          email: business.email
+        };
+
+      case 'jobAd':
+        const job = profile as JobProfile;
+        return {
+          name: job.companyName,
+          image: job.image,
+          skills: job.requirements.skills.map(s => s.name).join(', '),
+          experience: job.title,
+          workCommitment: `${job.workCommitment} • ${job.workArrangement}`,
+          location: job.location,
+          locationName: job.location.name,
+          email: job.email
+        };
+
+      default:
+        return {
+          name: 'Unknown',
+          image: '',
+          skills: '',
+          experience: '',
+          workCommitment: '',
+          location: { latitude: 0, longitude: 0, name: '' },
+          locationName: '',
+          email: ''
+        };
+    }
+  }, []);
+
+  // Enhanced auth state listener (unchanged)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (isMounted.current) {
@@ -64,11 +128,10 @@ export const MainSwipe: React.FC = () => {
         setError(null);
         console.log('Auth state changed:', user ? user.email : 'No user');
 
-        // Reset initialization when user changes
         if (user?.email !== currentUser?.email) {
           isInitialized.current = false;
           fetchAttempts.current = 0;
-          resetPagination(); // Reset pagination state
+          resetPagination();
         }
       }
     });
@@ -78,7 +141,7 @@ export const MainSwipe: React.FC = () => {
     };
   }, [currentUser?.email]);
 
-  // Debug function for troubleshooting
+  // UPDATED debug function to work with new profile structure
   const debugCurrentState = useCallback(async () => {
     if (!currentUser?.email) return;
 
@@ -89,11 +152,16 @@ export const MainSwipe: React.FC = () => {
     console.log('Is initialized:', isInitialized.current);
     console.log('Fetch attempts:', fetchAttempts.current);
 
-    // Get pagination status
+    // Log profile sources breakdown
+    const sourceBreakdown = profileQueue.reduce((acc, profile) => {
+      acc[profile.source] = (acc[profile.source] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    console.log('Profile sources:', sourceBreakdown);
+
     const paginationStatus = getPaginationStatus();
     console.log('Pagination status:', paginationStatus);
 
-    // Debug storage
     await debugStorage();
 
     // Test job ads if user is from users collection
@@ -108,15 +176,20 @@ export const MainSwipe: React.FC = () => {
 
       if (!userDoc.empty) {
         const userData = userDoc.docs[0].data();
-        console.log('User skills:', userData.skills);
+        // Handle both old and new skill formats
+        const userSkills = Array.isArray(userData.skills)
+          ? userData.skills.map((s: any) => typeof s === 'string' ? s : s.name).join(', ')
+          : userData.skills || '';
 
-        if (userData.skills) {
+        console.log('User skills:', userSkills);
+
+        if (userSkills) {
           console.log('Testing job ads API...');
-          const testResult = await quickJobAdsTest(userData.skills);
+          const testResult = await quickJobAdsTest(userSkills);
           console.log('Job ads test:', testResult);
 
           if (debugMode) {
-            await debugJobAdsAPI(userData.skills);
+            await debugJobAdsAPI(userSkills);
           }
         }
       }
@@ -125,9 +198,9 @@ export const MainSwipe: React.FC = () => {
     }
 
     console.log('=== DEBUG COMPLETE ===\n');
-  }, [currentUser, profileQueue.length, swipedIds.length, debugMode]);
+  }, [currentUser, profileQueue, swipedIds.length, debugMode]);
 
-  // Enhanced initialization with comprehensive error handling
+  // UPDATED initialization function
   const initializeProfiles = useCallback(async () => {
     if (!currentUser?.email || isInitialized.current) return;
 
@@ -155,7 +228,6 @@ export const MainSwipe: React.FC = () => {
         allProfiles.current = queueResult;
         isInitialized.current = true;
 
-        // Still try to prefetch more in background
         setTimeout(() => {
           if (queueResult.length < MIN_PROFILES_BEFORE_FETCH) {
             prefetchMoreProfiles();
@@ -172,7 +244,6 @@ export const MainSwipe: React.FC = () => {
         setError('Failed to load profiles after multiple attempts. Please check your connection and try again.');
       } else {
         setError('Failed to load profiles. Retrying...');
-        // Retry after a delay
         setTimeout(() => {
           isInitialized.current = false;
           initializeProfiles();
@@ -185,7 +256,7 @@ export const MainSwipe: React.FC = () => {
     }
   }, [currentUser?.email]);
 
-  // Enhanced fresh profile loading with better error handling
+  // UPDATED loadFreshProfiles function
   const loadFreshProfiles = useCallback(async (excludeIds: string[] = []) => {
     if (!currentUser?.email) return;
 
@@ -197,7 +268,7 @@ export const MainSwipe: React.FC = () => {
         safeUser,
         excludeIds,
         cachedJobAds.current,
-        MIN_PROFILES_BEFORE_FETCH // Request more profiles initially
+        MIN_PROFILES_BEFORE_FETCH
       );
 
       cachedJobAds.current = updatedCache;
@@ -211,10 +282,9 @@ export const MainSwipe: React.FC = () => {
 
         console.log(`✅ Loaded ${limitedProfiles.length} fresh profiles`);
 
-        // Debug profile sources
+        // Debug profile sources with new structure
         const sources = limitedProfiles.reduce((acc, profile) => {
-          const source = profile.source || 'unknown';
-          acc[source] = (acc[source] || 0) + 1;
+          acc[profile.source] = (acc[profile.source] || 0) + 1;
           return acc;
         }, {} as Record<string, number>);
         console.log('📊 Profile sources:', sources);
@@ -230,7 +300,7 @@ export const MainSwipe: React.FC = () => {
     }
   }, [currentUser?.email, debugCurrentState]);
 
-  // Enhanced prefetching with better logic
+  // UPDATED prefetchMoreProfiles function
   const prefetchMoreProfiles = useCallback(async () => {
     if (!currentUser?.email || prefetching || loading) return;
 
@@ -243,13 +313,12 @@ export const MainSwipe: React.FC = () => {
         safeUser,
         swipedIds,
         cachedJobAds.current,
-        20 // Request a good batch size
+        20
       );
 
       cachedJobAds.current = updatedCache;
 
       if (moreProfiles.length > 0) {
-        // Filter out duplicates and limit total queue size
         const newProfiles = moreProfiles.filter(p =>
           !profileQueue.some(q => q.id === p.id) &&
           !swipedIds.includes(p.id)
@@ -269,27 +338,25 @@ export const MainSwipe: React.FC = () => {
       } else {
         console.log('⚠️ No more profiles available for prefetch');
 
-        // If we're really low on profiles, debug the situation
         if (profileQueue.length <= 5) {
           await debugCurrentState();
         }
       }
     } catch (error) {
       console.warn('⚠️ Prefetch failed:', error);
-      // Don't show error to user for prefetch failures, but log it
     } finally {
       setPrefetching(false);
     }
   }, [currentUser?.email, swipedIds, profileQueue, prefetching, loading, debugCurrentState]);
 
-  // Initialize when user is ready
+  // Initialize when user is ready (unchanged)
   useEffect(() => {
     if (currentUser && !isInitialized.current) {
       initializeProfiles();
     }
   }, [currentUser, initializeProfiles]);
 
-  // Enhanced debug useEffect for troubleshooting
+  // Enhanced debug useEffect (unchanged)
   useEffect(() => {
     const debugEmptyQueue = async () => {
       if (currentUser?.email && isInitialized.current && profileQueue.length === 0 && !loading && !prefetching) {
@@ -303,9 +370,9 @@ export const MainSwipe: React.FC = () => {
     debugEmptyQueue();
   }, [currentUser, profileQueue.length, loading, prefetching, isInitialized.current, debugCurrentState]);
 
-  // Debounced storage saves with user-specific keys
+  // Debounced storage saves (unchanged)
   const debouncedSaveQueue = useCallback(
-    debounce((queue: Profile[], userEmail: string) => {
+    debounce((queue: MatchableProfile[], userEmail: string) => {
       if (queue.length > 0) {
         saveQueueToStorage(queue, userEmail);
       }
@@ -322,7 +389,7 @@ export const MainSwipe: React.FC = () => {
     []
   );
 
-  // Save to storage with debouncing and user-specific keys
+  // Save to storage effects (unchanged)
   useEffect(() => {
     if (profileQueue.length > 0 && currentUser?.email) {
       debouncedSaveQueue(profileQueue, currentUser.email);
@@ -335,7 +402,7 @@ export const MainSwipe: React.FC = () => {
     }
   }, [swipedIds, currentUser?.email, debouncedSaveSwipedIds]);
 
-  // Enhanced swipe handler with better logic
+  // UPDATED handleSwipe function
   const handleSwipe = useCallback(async (direction: 'left' | 'right') => {
     if (!currentUser?.email || profileQueue.length === 0) {
       console.warn('Cannot swipe: no user or empty queue');
@@ -343,7 +410,8 @@ export const MainSwipe: React.FC = () => {
     }
 
     const swipedProfile = profileQueue[0];
-    console.log(`👆 Swiped ${direction} on: ${swipedProfile.firstName} (${swipedProfile.source})`);
+    const displayData = getProfileDisplayData(swipedProfile);
+    console.log(`👆 Swiped ${direction} on: ${displayData?.name} (${swipedProfile.source})`);
 
     // Optimistic updates
     const newSwipedIds = [...swipedIds, swipedProfile.id];
@@ -352,7 +420,7 @@ export const MainSwipe: React.FC = () => {
 
     // Handle match logic for right swipes
     if (direction === 'right') {
-      console.log('💖 Potential match with:', swipedProfile.firstName);
+      console.log('Potential match with:', displayData?.name);
       // TODO: Implement match detection and notification
     }
 
@@ -363,25 +431,24 @@ export const MainSwipe: React.FC = () => {
       console.warn('Failed to save swiped ID:', error);
     }
 
-    // Enhanced prefetch logic - be more aggressive about keeping profiles
+    // Enhanced prefetch logic
     const remainingProfiles = profileQueue.length - 1;
     if (remainingProfiles <= PREFETCH_THRESHOLD && !prefetching) {
       console.log(`⚡ Triggering prefetch: ${remainingProfiles} profiles remaining`);
       prefetchMoreProfiles();
     }
 
-    // If we're getting really low, show a warning
     if (remainingProfiles <= 1 && !prefetching) {
       console.warn('🚨 Critical: Only 1 profile remaining!');
     }
 
-  }, [currentUser?.email, profileQueue, swipedIds, prefetching, prefetchMoreProfiles]);
+  }, [currentUser?.email, profileQueue, swipedIds, prefetching, prefetchMoreProfiles, getProfileDisplayData]);
 
   const { pan, panResponder } = useSwipe(handleSwipe);
 
-  // Enhanced location fetching with cleanup and timeout
+  // UPDATED location fetching to work with new structure
   useEffect(() => {
-    if (!currentProfile?.location || currentProfile.locationName) return;
+    if (!currentProfile?.location || currentProfile.location.name) return;
 
     const { latitude, longitude } = currentProfile.location;
     if (typeof latitude !== 'number' || typeof longitude !== 'number') return;
@@ -407,7 +474,14 @@ export const MainSwipe: React.FC = () => {
           setProfileQueue(prev => {
             const updated = [...prev];
             if (updated[0]?.id === currentProfile.id) {
-              updated[0] = { ...updated[0], locationName };
+              // Update location name in the profile
+              updated[0] = {
+                ...updated[0],
+                location: {
+                  ...updated[0].location,
+                  name: locationName
+                }
+              };
             }
             return updated;
           });
@@ -422,7 +496,7 @@ export const MainSwipe: React.FC = () => {
     fetchLocation();
   }, [currentProfile?.id, currentProfile?.location]);
 
-  // Cleanup on focus/unmount
+  // Cleanup effects (unchanged)
   useFocusEffect(
     useCallback(() => {
       isMounted.current = true;
@@ -443,7 +517,7 @@ export const MainSwipe: React.FC = () => {
     };
   }, []);
 
-  // Utility function for debouncing (same as before)
+  // Utility debounce function (unchanged)
   function debounce<T extends (...args: any[]) => any>(
     func: T,
     wait: number
@@ -455,6 +529,7 @@ export const MainSwipe: React.FC = () => {
     };
   }
 
+  // Loading state (unchanged)
   if (loading || !currentUser) {
     return (
       <View style={styles.container}>
@@ -467,6 +542,7 @@ export const MainSwipe: React.FC = () => {
     );
   }
 
+  // Error state (unchanged)
   if (error) {
     return (
       <View style={styles.container}>
@@ -485,7 +561,7 @@ export const MainSwipe: React.FC = () => {
     );
   }
 
-  // ADD THIS EMPTY STATE CHECK:
+  // Empty state (unchanged)
   if (!currentProfile) {
     return (
       <View style={styles.container}>
@@ -503,7 +579,17 @@ export const MainSwipe: React.FC = () => {
     );
   }
 
-  // Main render
+  // UPDATED main render to use new profile structure
+  const displayData = getProfileDisplayData(currentProfile);
+
+  if (!displayData) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.errorText}>Error displaying profile</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       {/* Profile Card */}
@@ -528,7 +614,7 @@ export const MainSwipe: React.FC = () => {
       >
         <Image
           source={{
-            uri: currentProfile.image || 'https://via.placeholder.com/300x400/8456ad/ffffff?text=No+Image'
+            uri: displayData.image || 'https://via.placeholder.com/300x400/8456ad/ffffff?text=No+Image'
           }}
           style={styles.profileImage}
           resizeMode="cover"
@@ -536,40 +622,48 @@ export const MainSwipe: React.FC = () => {
 
         <View style={styles.cardInfo}>
           <Text style={styles.name} numberOfLines={1}>
-            {currentProfile.firstName} {currentProfile.lastName}
+            {displayData.name}
           </Text>
 
-          {currentProfile.experience && (
+          {displayData.experience && (
             <Text style={styles.experience} numberOfLines={1}>
-              💼 {currentProfile.experience}
+              💼 {displayData.experience}
             </Text>
           )}
 
           <Text style={styles.skills} numberOfLines={2}>
-            🔧 {currentProfile.skills || "No skills listed"}
+            🔧 {displayData.skills || "No skills listed"}
           </Text>
 
           <Text style={styles.location} numberOfLines={1}>
-            📍 {currentProfile.locationName || "Loading location..."}
+            📍 {displayData.locationName || "Loading location..."}
           </Text>
 
-          {currentProfile.workCommitment && (
+          {displayData.workCommitment && (
             <Text style={styles.workCommitment} numberOfLines={1}>
-              ⏰ {currentProfile.workCommitment}
+              ⏰ {displayData.workCommitment}
             </Text>
           )}
 
-          {currentProfile.score && (
+          {(currentProfile as any).score && (
             <View style={styles.matchContainer}>
               <Text style={styles.matchScore}>
-                {Math.round(currentProfile.score * 100)}% Match
+                {Math.round((currentProfile as any).score * 100)}% Match
               </Text>
             </View>
           )}
+
+          {/* Add profile type indicator */}
+          <View style={styles.typeIndicator}>
+            <Text style={styles.typeText}>
+              {currentProfile.source === 'user' ? '👤 Job Seeker' :
+                currentProfile.source === 'business' ? '🏢 Company' : '💼 Job Ad'}
+            </Text>
+          </View>
         </View>
       </Animated.View>
 
-      {/* Queue indicator */}
+      {/* Queue indicator (unchanged) */}
       <View style={styles.queueIndicator}>
         <Text style={styles.queueText}>
           {profileQueue.length - 1} more profiles
@@ -579,7 +673,7 @@ export const MainSwipe: React.FC = () => {
         )}
       </View>
 
-      {/* Bottom Navigation */}
+      {/* Bottom Navigation (unchanged) */}
       <View style={styles.bottomMenu}>
         <TouchableOpacity
           style={styles.menuButton}
@@ -608,19 +702,7 @@ export const MainSwipe: React.FC = () => {
   );
 };
 
-// Utility function for debouncing
-function debounce<T extends (...args: any[]) => any>(
-  func: T,
-  wait: number
-): (...args: Parameters<T>) => void {
-  let timeout: NodeJS.Timeout;
-  return (...args: Parameters<T>) => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => func(...args), wait);
-  };
-}
-
-// Enhanced styles with better visual hierarchy
+// UPDATED styles with new type indicator
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -686,11 +768,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 15,
+    marginBottom: 8,
   },
   matchScore: {
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  typeIndicator: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#f0f0f0',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  typeText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#666',
   },
   queueIndicator: {
     position: 'absolute',

@@ -10,7 +10,7 @@ import {
   updateProfile,
 } from 'firebase/auth';
 
-import { auth, firestore } from './firebaseConfig';
+import { auth as defaultAuth, firestore, app } from './firebaseConfig';
 import {
   query,
   collection,
@@ -20,8 +20,13 @@ import {
   setDoc,
   getDoc,
   serverTimestamp,
-  limit // ← Added this missing import
+  enableNetwork,
 } from 'firebase/firestore';
+import NetInfo from '@react-native-community/netinfo';
+import { AppState, AppStateStatus, Platform } from 'react-native';
+
+// Initialize auth with proper persistence for Expo
+let auth = defaultAuth;
 
 // Enhanced interfaces for better type safety
 interface AuthResult {
@@ -49,6 +54,200 @@ export class AuthError extends Error {
     super(message);
     this.name = 'AuthError';
   }
+}
+
+// Network state manager
+class NetworkManager {
+  private static instance: NetworkManager;
+  private isConnected: boolean = true;
+  private listeners: ((isConnected: boolean) => void)[] = [];
+  private appState: AppStateStatus = 'active';
+  private retryTimeouts: Set<NodeJS.Timeout> = new Set();
+
+  private constructor() {
+    this.initializeNetworkMonitoring();
+    this.initializeAppStateMonitoring();
+  }
+
+  static getInstance(): NetworkManager {
+    if (!NetworkManager.instance) {
+      NetworkManager.instance = new NetworkManager();
+    }
+    return NetworkManager.instance;
+  }
+
+  private initializeNetworkMonitoring() {
+    NetInfo.addEventListener(state => {
+      const wasConnected = this.isConnected;
+      this.isConnected = state.isConnected ?? false;
+
+      console.log('🌐 Network state changed:', {
+        connected: this.isConnected,
+        type: state.type,
+        details: state.details
+      });
+
+      // Notify listeners
+      this.listeners.forEach(listener => listener(this.isConnected));
+
+      // Handle reconnection
+      if (!wasConnected && this.isConnected && this.appState === 'active') {
+        console.log('📡 Network reconnected, refreshing Firebase connection...');
+        this.refreshFirebaseConnection();
+      }
+    });
+  }
+
+  private initializeAppStateMonitoring() {
+    AppState.addEventListener('change', (nextAppState) => {
+      const previousState = this.appState;
+      this.appState = nextAppState;
+
+      console.log('📱 App state changed:', { from: previousState, to: nextAppState });
+
+      if (nextAppState === 'active' && previousState !== 'active') {
+        console.log('🔄 App became active, refreshing connections...');
+        this.handleAppBecameActive();
+      } else if (nextAppState === 'background') {
+        console.log('💤 App going to background...');
+        this.handleAppGoingToBackground();
+      }
+    });
+  }
+
+  private async handleAppBecameActive() {
+    // Clear any pending retry timeouts
+    this.clearRetryTimeouts();
+
+    // Check network status
+    const netInfo = await NetInfo.fetch();
+    this.isConnected = netInfo.isConnected ?? false;
+
+    if (this.isConnected) {
+      await this.refreshFirebaseConnection();
+    }
+  }
+
+  private handleAppGoingToBackground() {
+    // Clear any pending operations
+    this.clearRetryTimeouts();
+  }
+
+  private clearRetryTimeouts() {
+    this.retryTimeouts.forEach(timeout => clearTimeout(timeout));
+    this.retryTimeouts.clear();
+  }
+
+  private async refreshFirebaseConnection() {
+    try {
+      // Re-enable Firestore network
+      await enableNetwork(firestore);
+
+      // Force auth token refresh if user is logged in
+      const currentUser = auth.currentUser;
+      if (currentUser) {
+        await currentUser.reload();
+        await currentUser.getIdToken(true);
+        console.log('✅ Firebase connection refreshed');
+      }
+    } catch (error) {
+      console.error('❌ Error refreshing Firebase connection:', error);
+    }
+  }
+
+  async waitForConnection(timeoutMs: number = 10000): Promise<boolean> {
+    if (this.isConnected) return true;
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve(false);
+      }, timeoutMs);
+
+      const unsubscribe = this.addListener((isConnected) => {
+        if (isConnected) {
+          clearTimeout(timeout);
+          unsubscribe();
+          resolve(true);
+        }
+      });
+    });
+  }
+
+  addListener(listener: (isConnected: boolean) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== listener);
+    };
+  }
+
+  get connected(): boolean {
+    return this.isConnected;
+  }
+
+  addRetryTimeout(timeout: NodeJS.Timeout) {
+    this.retryTimeouts.add(timeout);
+  }
+
+  removeRetryTimeout(timeout: NodeJS.Timeout) {
+    this.retryTimeouts.delete(timeout);
+  }
+}
+
+// Get network manager instance
+const networkManager = NetworkManager.getInstance();
+
+// Enhanced retry logic for auth operations
+async function retryAuthOperation<T>(
+  operation: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<T> {
+  let lastError: any;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // Check network before attempting
+      if (!networkManager.connected) {
+        console.log('⏳ Waiting for network connection...');
+        const connected = await networkManager.waitForConnection(5000);
+        if (!connected) {
+          throw new AuthError('No network connection available', 'network-unavailable');
+        }
+      }
+
+      // Attempt the operation
+      return await operation();
+    } catch (error: any) {
+      lastError = error;
+      console.log(`🔄 Auth operation failed (attempt ${attempt + 1}/${maxRetries}):`, error.code);
+
+      // Don't retry for certain errors
+      const nonRetryableErrors = [
+        'auth/user-not-found',
+        'auth/wrong-password',
+        'auth/invalid-email',
+        'auth/user-disabled',
+        'auth/email-already-in-use',
+      ];
+
+      if (nonRetryableErrors.includes(error.code)) {
+        throw error;
+      }
+
+      // Calculate delay with exponential backoff
+      const delay = baseDelay * Math.pow(2, attempt);
+
+      if (attempt < maxRetries - 1) {
+        console.log(`⏳ Retrying in ${delay}ms...`);
+        await new Promise(resolve => {
+          const timeout = setTimeout(resolve, delay);
+          networkManager.addRetryTimeout(timeout);
+        });
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 // References
@@ -80,16 +279,17 @@ const handleAuthError = (error: any): AuthError => {
     'auth/too-many-requests': 'Too many failed attempts. Please try again later.',
     'auth/email-already-in-use': 'An account with this email already exists.',
     'auth/weak-password': 'Password is too weak. Please choose a stronger password.',
-    'auth/network-request-failed': 'Network error. Please check your connection.',
+    'auth/network-request-failed': 'Network error. Please check your connection and try again.',
     'auth/invalid-credential': 'Invalid login credentials.',
     'auth/operation-not-allowed': 'This sign-in method is not enabled.',
+    'network-unavailable': 'No network connection. Please check your internet connection.',
   };
 
   const message = errorMessages[error.code] || 'An unexpected error occurred. Please try again.';
   return new AuthError(message, error.code, error);
 };
 
-// Enhanced sign-in with validation and user type detection
+// Enhanced sign-in with validation, network checking, and retry logic
 export const signInUser = async (email: string, password: string): Promise<AuthResult> => {
   try {
     // Input validation
@@ -104,7 +304,12 @@ export const signInUser = async (email: string, password: string): Promise<AuthR
     }
 
     console.log('🔐 Attempting to sign in user:', trimmedEmail);
-    const userCredential = await signInWithEmailAndPassword(auth, trimmedEmail, password);
+
+    // Use retry logic for sign in
+    const userCredential = await retryAuthOperation(async () => {
+      return await signInWithEmailAndPassword(auth, trimmedEmail, password);
+    });
+
     const user = userCredential.user;
 
     // Update last login timestamp
@@ -120,7 +325,7 @@ export const signInUser = async (email: string, password: string): Promise<AuthR
   }
 };
 
-// Enhanced registration with profile creation
+// Enhanced registration with profile creation and retry logic
 export const registerUser = async (
   email: string,
   password: string,
@@ -141,7 +346,12 @@ export const registerUser = async (
     }
 
     console.log('📝 Registering new user:', trimmedEmail);
-    const userCredential = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+
+    // Use retry logic for registration
+    const userCredential = await retryAuthOperation(async () => {
+      return await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+    });
+
     const user = userCredential.user;
 
     // Update display name if provided
@@ -173,9 +383,9 @@ export const signInBusinessUser = async (email: string, password: string): Promi
     const result = await signInUser(email, password);
 
     // Then verify they are actually a business user
-    const businessUserDoc = await getDoc(doc(db, 'businessUsers', result.user.uid));
+    const businessUsersDoc = await getDoc(doc(db, 'businessUsers', result.user.uid));
 
-    if (!businessUserDoc.exists()) {
+    if (!businessUsersDoc.exists()) {
       // Sign out the user since they're not authorized as business user
       await signOut(auth);
       throw new AuthError(
@@ -184,7 +394,7 @@ export const signInBusinessUser = async (email: string, password: string): Promi
       );
     }
 
-    const businessUserData = businessUserDoc.data();
+    const businessUserData = businessUsersDoc.data();
     console.log('✅ Business user signed in successfully:', businessUserData.email);
 
     return { ...result, userType: 'business' };
@@ -229,7 +439,10 @@ const createUserProfile = async (
     };
 
     const collectionName = profileData.userType === 'business' ? 'businessUsers' : 'users';
-    await setDoc(doc(db, collectionName, user.uid), profile);
+
+    await retryAuthOperation(async () => {
+      await setDoc(doc(db, collectionName, user.uid), profile);
+    });
 
     console.log(`✅ User profile created in ${collectionName} collection`);
   } catch (error) {
@@ -241,18 +454,20 @@ const createUserProfile = async (
 // Update last login timestamp efficiently
 const updateUserLastLogin = async (uid: string): Promise<void> => {
   try {
-    // Try business users first (usually smaller dataset)
-    const businessUserRef = doc(db, 'businessUsers', uid);
-    const businessUserDoc = await getDoc(businessUserRef);
+    await retryAuthOperation(async () => {
+      // Try business users first (usually smaller dataset)
+      const businessUserRef = doc(db, 'businessUsers', uid);
+      const businessUserDoc = await getDoc(businessUserRef);
 
-    if (businessUserDoc.exists()) {
-      await setDoc(businessUserRef, { lastLoginAt: serverTimestamp() }, { merge: true });
-      return;
-    }
+      if (businessUserDoc.exists()) {
+        await setDoc(businessUserRef, { lastLoginAt: serverTimestamp() }, { merge: true });
+        return;
+      }
 
-    // Try regular users if not found in business users
-    const userRef = doc(db, 'users', uid);
-    await setDoc(userRef, { lastLoginAt: serverTimestamp() }, { merge: true });
+      // Try regular users if not found in business users
+      const userRef = doc(db, 'users', uid);
+      await setDoc(userRef, { lastLoginAt: serverTimestamp() }, { merge: true });
+    }, 1); // Only retry once for non-critical operations
   } catch (error) {
     console.warn('⚠️ Error updating last login (non-critical):', error);
     // Don't throw error for this non-critical operation
@@ -271,8 +486,13 @@ export const signInWithGoogle = async (
     }
 
     console.log('🔐 Signing in with Google...');
+
     const credential = GoogleAuthProvider.credential(idToken, accessToken);
-    const userCredential = await signInWithCredential(auth, credential);
+
+    const userCredential = await retryAuthOperation(async () => {
+      return await signInWithCredential(auth, credential);
+    });
+
     const user = userCredential.user;
 
     // Check if this is a new user (creation time equals last sign-in time)
@@ -313,7 +533,10 @@ export const resetPassword = async (email: string): Promise<void> => {
       throw new AuthError('Please enter a valid email address.', 'invalid-email');
     }
 
-    await sendPasswordResetEmail(auth, trimmedEmail);
+    await retryAuthOperation(async () => {
+      await sendPasswordResetEmail(auth, trimmedEmail);
+    });
+
     console.log('📧 Password reset email sent to:', trimmedEmail);
   } catch (error: any) {
     throw handleAuthError(error);
@@ -342,33 +565,44 @@ export const getCurrentUserProfile = async (): Promise<UserProfile | null> => {
       return null;
     }
 
-    // Try business users first
-    const businessUserDoc = await getDoc(doc(db, 'businessUsers', currentUser.uid));
-    if (businessUserDoc.exists()) {
-      return { ...businessUserDoc.data(), userType: 'business' } as UserProfile;
-    }
+    return await retryAuthOperation(async () => {
+      // Try business users first
+      const businessUserDoc = await getDoc(doc(db, 'businessUsers', currentUser.uid));
+      if (businessUserDoc.exists()) {
+        return { ...businessUserDoc.data(), userType: 'business' } as UserProfile;
+      }
 
-    // Try regular users
-    const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
-    if (userDoc.exists()) {
-      return { ...userDoc.data(), userType: 'regular' } as UserProfile;
-    }
+      // Try regular users
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
+      if (userDoc.exists()) {
+        return { ...userDoc.data(), userType: 'regular' } as UserProfile;
+      }
 
-    console.warn('User profile not found in Firestore for:', currentUser.email);
-    return null;
+      console.warn('User profile not found in Firestore for:', currentUser.email);
+      return null;
+    });
   } catch (error) {
     console.error('❌ Error fetching user profile:', error);
     return null;
   }
 };
 
-// Enhanced auth state monitoring with user type detection
+// Enhanced auth state monitoring with user type detection and network awareness
 export const monitorAuthState = (
   callback: (user: User | null, userType?: 'regular' | 'business') => void
 ) => {
   return onAuthStateChanged(auth, async (user) => {
     if (user) {
       try {
+        // Force token refresh if network is available
+        if (networkManager.connected) {
+          try {
+            await user.getIdToken(true);
+          } catch (error) {
+            console.warn('Token refresh failed:', error);
+          }
+        }
+
         const userType = await getUserType(user.email!);
         callback(user, userType);
       } catch (error) {
@@ -423,22 +657,24 @@ export const updateUserProfile = async (
       throw new AuthError('No authenticated user found.', 'no-user');
     }
 
-    // Update Firebase Auth profile if name changed
-    if (updates.firstName || updates.lastName) {
-      const displayName = `${updates.firstName || ''} ${updates.lastName || ''}`.trim();
-      await updateProfile(currentUser, { displayName });
-    }
+    await retryAuthOperation(async () => {
+      // Update Firebase Auth profile if name changed
+      if (updates.firstName || updates.lastName) {
+        const displayName = `${updates.firstName || ''} ${updates.lastName || ''}`.trim();
+        await updateProfile(currentUser, { displayName });
+      }
 
-    // Determine which collection to update
-    const userType = await getUserType(currentUser.email!);
-    const collectionName = userType === 'business' ? 'businessUsers' : 'users';
+      // Determine which collection to update
+      const userType = await getUserType(currentUser.email!);
+      const collectionName = userType === 'business' ? 'businessUsers' : 'users';
 
-    // Update Firestore document
-    const userRef = doc(db, collectionName, currentUser.uid);
-    await setDoc(userRef, {
-      ...updates,
-      lastLoginAt: serverTimestamp()
-    }, { merge: true });
+      // Update Firestore document
+      const userRef = doc(db, collectionName, currentUser.uid);
+      await setDoc(userRef, {
+        ...updates,
+        lastLoginAt: serverTimestamp()
+      }, { merge: true });
+    });
 
     console.log('✅ User profile updated successfully');
   } catch (error: any) {
@@ -446,7 +682,7 @@ export const updateUserProfile = async (
   }
 };
 
-// Rate limiting helper (basic implementation)
+// Rate limiting helper
 const rateLimitMap = new Map<string, number>();
 export const checkRateLimit = async (
   identifier: string,
@@ -481,7 +717,27 @@ export const checkRateLimit = async (
   return true;
 };
 
-// Export the original function for backward compatibility
+// Force refresh Firebase connection (useful for debugging)
+export const forceRefreshConnection = async (): Promise<void> => {
+  try {
+    console.log('🔄 Forcing Firebase connection refresh...');
+
+    // Re-enable network
+    await enableNetwork(firestore);
+
+    // Refresh auth token if logged in
+    const user = auth.currentUser;
+    if (user) {
+      await user.reload();
+      await user.getIdToken(true);
+    }
+
+    console.log('✅ Firebase connection refreshed');
+  } catch (error) {
+    console.error('❌ Error refreshing connection:', error);
+    throw error;
+  }
+};
 
 // Export all necessary items
 export { auth, db };

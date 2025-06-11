@@ -7,6 +7,42 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:229617242049:android:dd31003464c55ff322e940",
+        "android_client_info": {
+          "package_name": "com.anonymous.frontend"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "229617242049-1huopuffcdrilth41ct4cuebk5ocnk4u.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCJPm-ewS9LprtBDC50bi5XxQZi44y5hTE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "229617242049-1huopuffcdrilth41ct4cuebk5ocnk4u.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "229617242049-8ucecfemse73mglml5abefucafufu50i.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.anonymous.frontend"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:229617242049:android:1064eaa02d3b673d22e940",
         "android_client_info": {
           "package_name": "com.company.jobfinder"
@@ -31,10 +67,10 @@
               "client_type": 3
             },
             {
-              "client_id": "229617242049-ppv686fp997tbjr7lat22r57cqqpd89u.apps.googleusercontent.com",
+              "client_id": "229617242049-8ucecfemse73mglml5abefucafufu50i.apps.googleusercontent.com",
               "client_type": 2,
               "ios_info": {
-                "bundle_id": "com.company.job-finder"
+                "bundle_id": "com.anonymous.frontend"
               }
             }
           ]

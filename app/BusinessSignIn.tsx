@@ -1,783 +1,672 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { View, Text, Image, StyleSheet, Alert, ActivityIndicator, Animated } from 'react-native';
-import { TouchableOpacity } from 'react-native';
-import Icon from 'react-native-vector-icons/FontAwesome';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
-import { StackNavigationProp } from '@react-navigation/stack';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { collection, query, where, limit, getDocs } from 'firebase/firestore';
-
-import { auth, firestore } from '../frontend/services/firebaseConfig';
-import { RootStackParamList } from '../types';
-import { Profile } from '../frontend/components/SwipeAlgorithm';
-import { fetchAndMatchProfiles, resetPagination, getPaginationStatus } from '../frontend/components/SwipeAlgorithm';
-import { fetchLocationName } from '../frontend/components/Location';
-import { useSwipe } from '../frontend/components/useSwipe';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import {
-  saveQueueToStorage,
-  loadQueueFromStorage,
-  saveSwipedIdsToStorage,
-  loadSwipedIdsFromStorage,
-  addSwipedId,
-  debugStorage
-} from '../frontend/components/userStateStorage';
-import { JobAdProfile, debugJobAdsAPI, quickJobAdsTest } from '../frontend/services/fetchJobAds';
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  Dimensions,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  SafeAreaView,
+  ActivityIndicator,
+  Animated,
+} from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
+import { RootStackParamList } from '../types';
+import { StatusBar } from 'expo-status-bar';
+import Icon from 'react-native-vector-icons/MaterialIcons';
+import { signInBusinessUser, AuthError } from '../frontend/services/firebaseAuth';
 
-export type MainSwipeNavigationProp = StackNavigationProp<RootStackParamList, 'MainSwipe'>;
+type BusinessSignInNavigationProp = StackNavigationProp<RootStackParamList, 'BusinessSignIn'>;
 
-// Enhanced constants for better performance
-const PREFETCH_THRESHOLD = 2; // Reduced to trigger earlier
-const MAX_QUEUE_SIZE = 100; // Increased for better buffering
-const LOCATION_FETCH_TIMEOUT = 8000;
-const DEBOUNCE_DELAY = 300;
-const MIN_PROFILES_BEFORE_FETCH = 30; // Ensure we have enough profiles
+const { width, height } = Dimensions.get('window');
 
-export const MainSwipe: React.FC = () => {
-  const navigation = useNavigation<MainSwipeNavigationProp>();
+interface FormErrors {
+  email?: string;
+  password?: string;
+  general?: string;
+}
+
+export const BusinessSignIn: React.FC = () => {
+  const navigation = useNavigation<BusinessSignInNavigationProp>();
 
   // Enhanced state management
-  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
-  const [profileQueue, setProfileQueue] = useState<Profile[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [swipedIds, setSwipedIds] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [prefetching, setPrefetching] = useState(false);
-  const [debugMode, setDebugMode] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState<FormErrors>({});
+  const [attemptCount, setAttemptCount] = useState(0);
 
-  // Refs for performance and cleanup
-  const allProfiles = useRef<Profile[]>([]);
-  const cachedJobAds = useRef<JobAdProfile[] | null>(null);
-  const locationController = useRef<AbortController | null>(null);
-  const isInitialized = useRef(false);
-  const isMounted = useRef(true);
-  const fetchAttempts = useRef(0);
-  const maxFetchAttempts = 3;
+  // Animation refs
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(30)).current;
+  const shakeAnim = useRef(new Animated.Value(0)).current;
 
-  // Memoized current profile to prevent unnecessary re-renders
-  const currentProfile = useMemo(() => profileQueue[0], [profileQueue]);
+  // Input refs for better UX
+  const emailRef = useRef<TextInput>(null);
+  const passwordRef = useRef<TextInput>(null);
 
-  // Enhanced auth state listener
+  // Entrance animation
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (isMounted.current) {
-        setCurrentUser(user);
-        setError(null);
-        console.log('Auth state changed:', user ? user.email : 'No user');
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 800,
+        useNativeDriver: true,
+      }),
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 600,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [fadeAnim, slideAnim]);
 
-        // Reset initialization when user changes
-        if (user?.email !== currentUser?.email) {
-          isInitialized.current = false;
-          fetchAttempts.current = 0;
-          resetPagination(); // Reset pagination state
-        }
-      }
-    });
-
-    return () => {
-      unsubscribe();
-    };
-  }, [currentUser?.email]);
-
-  // Debug function for troubleshooting
-  const debugCurrentState = useCallback(async () => {
-    if (!currentUser?.email) return;
-
-    console.log('\n=== MAIN SWIPE DEBUG ===');
-    console.log('Current user:', currentUser.email);
-    console.log('Profile queue length:', profileQueue.length);
-    console.log('Swiped IDs count:', swipedIds.length);
-    console.log('Is initialized:', isInitialized.current);
-    console.log('Fetch attempts:', fetchAttempts.current);
-
-    // Get pagination status
-    const paginationStatus = getPaginationStatus();
-    console.log('Pagination status:', paginationStatus);
-
-    // Debug storage
-    await debugStorage();
-
-    // Test job ads if user is from users collection
-    try {
-      const userDoc = await getDocs(
-        query(
-          collection(firestore, 'users'),
-          where('email', '==', currentUser.email),
-          limit(1)
-        )
-      );
-
-      if (!userDoc.empty) {
-        const userData = userDoc.docs[0].data();
-        console.log('User skills:', userData.skills);
-
-        if (userData.skills) {
-          console.log('Testing job ads API...');
-          const testResult = await quickJobAdsTest(userData.skills);
-          console.log('Job ads test:', testResult);
-
-          if (debugMode) {
-            await debugJobAdsAPI(userData.skills);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Debug error:', error);
-    }
-
-    console.log('=== DEBUG COMPLETE ===\n');
-  }, [currentUser, profileQueue.length, swipedIds.length, debugMode]);
-
-  // Enhanced initialization with comprehensive error handling
-  const initializeProfiles = useCallback(async () => {
-    if (!currentUser?.email || isInitialized.current) return;
-
-    try {
-      setLoading(true);
-      setError(null);
-      fetchAttempts.current++;
-
-      console.log(`🚀 Initializing profiles for: ${currentUser.email} (attempt ${fetchAttempts.current})`);
-
-      // Try loading from cache first
-      const [cachedQueue, cachedSwiped] = await Promise.allSettled([
-        loadQueueFromStorage(currentUser.email),
-        loadSwipedIdsFromStorage(currentUser.email)
-      ]);
-
-      const queueResult = cachedQueue.status === 'fulfilled' ? cachedQueue.value : null;
-      const swipedResult = cachedSwiped.status === 'fulfilled' ? cachedSwiped.value : [];
-
-      // Use cache if it has sufficient profiles
-      if (queueResult && queueResult.length >= PREFETCH_THRESHOLD) {
-        console.log('📦 Using cached profiles:', queueResult.length);
-        setProfileQueue(queueResult.slice(0, MAX_QUEUE_SIZE));
-        setSwipedIds(swipedResult);
-        allProfiles.current = queueResult;
-        isInitialized.current = true;
-
-        // Still try to prefetch more in background
-        setTimeout(() => {
-          if (queueResult.length < MIN_PROFILES_BEFORE_FETCH) {
-            prefetchMoreProfiles();
-          }
-        }, 1000);
-      } else {
-        console.log('🔄 Fetching fresh profiles...');
-        await loadFreshProfiles(swipedResult);
-      }
-    } catch (error) {
-      console.error('❌ Initialization error:', error);
-
-      if (fetchAttempts.current >= maxFetchAttempts) {
-        setError('Failed to load profiles after multiple attempts. Please check your connection and try again.');
-      } else {
-        setError('Failed to load profiles. Retrying...');
-        // Retry after a delay
-        setTimeout(() => {
-          isInitialized.current = false;
-          initializeProfiles();
-        }, 2000);
-      }
-    } finally {
-      if (isMounted.current) {
-        setLoading(false);
-      }
-    }
-  }, [currentUser?.email]);
-
-  // Enhanced fresh profile loading with better error handling
-  const loadFreshProfiles = useCallback(async (excludeIds: string[] = []) => {
-    if (!currentUser?.email) return;
-
-    try {
-      console.log(`🔄 Loading fresh profiles, excluding ${excludeIds.length} IDs`);
-
-      const safeUser = { email: currentUser.email };
-      const { profiles, updatedCache } = await fetchAndMatchProfiles(
-        safeUser,
-        excludeIds,
-        cachedJobAds.current,
-        MIN_PROFILES_BEFORE_FETCH // Request more profiles initially
-      );
-
-      cachedJobAds.current = updatedCache;
-
-      if (profiles.length > 0) {
-        const limitedProfiles = profiles.slice(0, MAX_QUEUE_SIZE);
-        setProfileQueue(limitedProfiles);
-        allProfiles.current = profiles;
-        setSwipedIds(excludeIds);
-        isInitialized.current = true;
-
-        console.log(`✅ Loaded ${limitedProfiles.length} fresh profiles`);
-
-        // Debug profile sources
-        const sources = limitedProfiles.reduce((acc, profile) => {
-          const source = profile.source || 'unknown';
-          acc[source] = (acc[source] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>);
-        console.log('📊 Profile sources:', sources);
-
-      } else {
-        console.log('⚠️ No profiles returned from fetch');
-        await debugCurrentState();
-        setError('No profiles available at the moment. This might be because:\n• All available profiles have been swiped\n• Limited profiles match your criteria\n• Temporary service issues');
-      }
-    } catch (error) {
-      console.error('❌ Error loading fresh profiles:', error);
-      throw error;
-    }
-  }, [currentUser?.email, debugCurrentState]);
-
-  // Enhanced prefetching with better logic
-  const prefetchMoreProfiles = useCallback(async () => {
-    if (!currentUser?.email || prefetching || loading) return;
-
-    setPrefetching(true);
-    try {
-      console.log(`🔄 Prefetching more profiles... (current queue: ${profileQueue.length})`);
-
-      const safeUser = { email: currentUser.email };
-      const { profiles: moreProfiles, updatedCache } = await fetchAndMatchProfiles(
-        safeUser,
-        swipedIds,
-        cachedJobAds.current,
-        20 // Request a good batch size
-      );
-
-      cachedJobAds.current = updatedCache;
-
-      if (moreProfiles.length > 0) {
-        // Filter out duplicates and limit total queue size
-        const newProfiles = moreProfiles.filter(p =>
-          !profileQueue.some(q => q.id === p.id) &&
-          !swipedIds.includes(p.id)
-        );
-
-        if (newProfiles.length > 0) {
-          setProfileQueue(prev => {
-            const combined = [...prev, ...newProfiles];
-            return combined.slice(0, MAX_QUEUE_SIZE);
-          });
-
-          allProfiles.current = [...allProfiles.current, ...newProfiles];
-          console.log(`✅ Prefetched ${newProfiles.length} new profiles (total queue: ${profileQueue.length + newProfiles.length})`);
-        } else {
-          console.log('⚠️ No new profiles after filtering duplicates');
-        }
-      } else {
-        console.log('⚠️ No more profiles available for prefetch');
-
-        // If we're really low on profiles, debug the situation
-        if (profileQueue.length <= 5) {
-          await debugCurrentState();
-        }
-      }
-    } catch (error) {
-      console.warn('⚠️ Prefetch failed:', error);
-      // Don't show error to user for prefetch failures, but log it
-    } finally {
-      setPrefetching(false);
-    }
-  }, [currentUser?.email, swipedIds, profileQueue, prefetching, loading, debugCurrentState]);
-
-  // Initialize when user is ready
+  // Clear errors when user starts typing
   useEffect(() => {
-    if (currentUser && !isInitialized.current) {
-      initializeProfiles();
+    if (errors.email || errors.password) {
+      setErrors(prev => ({
+        ...prev,
+        email: undefined,
+        password: undefined,
+      }));
     }
-  }, [currentUser, initializeProfiles]);
+  }, [email, password]);
 
-  // Enhanced debug useEffect for troubleshooting
-  useEffect(() => {
-    const debugEmptyQueue = async () => {
-      if (currentUser?.email && isInitialized.current && profileQueue.length === 0 && !loading && !prefetching) {
-        console.log('🔍 DEBUGGING: Queue is empty but should have profiles');
-        setDebugMode(true);
-        await debugCurrentState();
-        setDebugMode(false);
-      }
-    };
+  // Enhanced input validation
+  const validateForm = useCallback((): boolean => {
+    const newErrors: FormErrors = {};
 
-    debugEmptyQueue();
-  }, [currentUser, profileQueue.length, loading, prefetching, isInitialized.current, debugCurrentState]);
-
-  // Debounced storage saves with user-specific keys
-  const debouncedSaveQueue = useCallback(
-    debounce((queue: Profile[], userEmail: string) => {
-      if (queue.length > 0) {
-        saveQueueToStorage(queue, userEmail);
-      }
-    }, DEBOUNCE_DELAY),
-    []
-  );
-
-  const debouncedSaveSwipedIds = useCallback(
-    debounce((ids: string[], userEmail: string) => {
-      if (ids.length > 0) {
-        saveSwipedIdsToStorage(ids, userEmail);
-      }
-    }, DEBOUNCE_DELAY),
-    []
-  );
-
-  // Save to storage with debouncing and user-specific keys
-  useEffect(() => {
-    if (profileQueue.length > 0 && currentUser?.email) {
-      debouncedSaveQueue(profileQueue, currentUser.email);
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!email.trim()) {
+      newErrors.email = 'E-postadress krävs';
+    } else if (!emailRegex.test(email.trim())) {
+      newErrors.email = 'Ogiltig e-postadress';
     }
-  }, [profileQueue, currentUser?.email, debouncedSaveQueue]);
 
-  useEffect(() => {
-    if (swipedIds.length > 0 && currentUser?.email) {
-      debouncedSaveSwipedIds(swipedIds, currentUser.email);
+    // Password validation
+    if (!password) {
+      newErrors.password = 'Lösenord krävs';
+    } else if (password.length < 6) {
+      newErrors.password = 'Lösenordet måste vara minst 6 tecken';
     }
-  }, [swipedIds, currentUser?.email, debouncedSaveSwipedIds]);
 
-  // Enhanced swipe handler with better logic
-  const handleSwipe = useCallback(async (direction: 'left' | 'right') => {
-    if (!currentUser?.email || profileQueue.length === 0) {
-      console.warn('Cannot swipe: no user or empty queue');
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  }, [email, password]);
+
+  // Shake animation for errors
+  const triggerShakeAnimation = useCallback(() => {
+    Animated.sequence([
+      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
+    ]).start();
+  }, [shakeAnim]);
+
+  // Enhanced business sign in handler
+  const handleSignIn = useCallback(async () => {
+    if (loading) return;
+
+    // Clear previous general errors
+    setErrors(prev => ({ ...prev, general: undefined }));
+
+    // Validate form
+    if (!validateForm()) {
+      triggerShakeAnimation();
       return;
     }
 
-    const swipedProfile = profileQueue[0];
-    console.log(`👆 Swiped ${direction} on: ${swipedProfile.firstName} (${swipedProfile.source})`);
+    setLoading(true);
+    setAttemptCount(prev => prev + 1);
 
-    // Optimistic updates
-    const newSwipedIds = [...swipedIds, swipedProfile.id];
-    setSwipedIds(newSwipedIds);
-    setProfileQueue(prev => prev.slice(1));
-
-    // Handle match logic for right swipes
-    if (direction === 'right') {
-      console.log('💖 Potential match with:', swipedProfile.firstName);
-      // TODO: Implement match detection and notification
-    }
-
-    // Save swiped ID immediately for persistence
     try {
-      await addSwipedId(swipedProfile.id, currentUser.email);
-    } catch (error) {
-      console.warn('Failed to save swiped ID:', error);
-    }
+      console.log('🏢 Attempting business sign in:', email.trim());
 
-    // Enhanced prefetch logic - be more aggressive about keeping profiles
-    const remainingProfiles = profileQueue.length - 1;
-    if (remainingProfiles <= PREFETCH_THRESHOLD && !prefetching) {
-      console.log(`⚡ Triggering prefetch: ${remainingProfiles} profiles remaining`);
-      prefetchMoreProfiles();
-    }
+      const result = await signInBusinessUser(email.trim(), password);
+      console.log('✅ Business sign in successful:', result.user.email);
 
-    // If we're getting really low, show a warning
-    if (remainingProfiles <= 1 && !prefetching) {
-      console.warn('🚨 Critical: Only 1 profile remaining!');
-    }
+      // Navigate to MainSwipe
+      navigation.navigate('MainSwipe', { userId: result.user.uid });
 
-  }, [currentUser?.email, profileQueue, swipedIds, prefetching, prefetchMoreProfiles]);
+    } catch (error: any) {
+      console.error('❌ Business sign in error:', error);
 
-  const { pan, panResponder } = useSwipe(handleSwipe);
+      let errorMessage = 'Ett oväntat fel inträffade. Försök igen.';
+      let alertTitle = 'Inloggning misslyckades';
 
-  // Enhanced location fetching with cleanup and timeout
-  useEffect(() => {
-    if (!currentProfile?.location || currentProfile.locationName) return;
+      if (error instanceof AuthError) {
+        // Map Firebase errors to Swedish with business-specific messages
+        const errorMap: { [key: string]: { message: string; title: string } } = {
+          'auth/user-not-found': {
+            message: 'Ingen användare hittades med denna e-postadress.',
+            title: 'Användare ej hittad'
+          },
+          'auth/wrong-password': {
+            message: 'Felaktigt lösenord. Försök igen.',
+            title: 'Felaktigt lösenord'
+          },
+          'auth/invalid-email': {
+            message: 'Ogiltig e-postadress.',
+            title: 'Ogiltig e-post'
+          },
+          'auth/user-disabled': {
+            message: 'Detta företagskonto har inaktiverats. Kontakta support.',
+            title: 'Konto inaktiverat'
+          },
+          'auth/too-many-requests': {
+            message: 'För många misslyckade försök. Vänta och försök igen.',
+            title: 'För många försök'
+          },
+          'auth/network-request-failed': {
+            message: 'Nätverksfel. Kontrollera din internetanslutning.',
+            title: 'Nätverksfel'
+          },
+          'unauthorized-business-user': {
+            message: 'Detta konto är inte registrerat som ett företagskonto. Kontakta administratören eller använd vanlig inloggning.',
+            title: 'Ej företagskonto'
+          },
+        };
 
-    const { latitude, longitude } = currentProfile.location;
-    if (typeof latitude !== 'number' || typeof longitude !== 'number') return;
+        const errorInfo = errorMap[error.code] || {
+          message: error.message,
+          title: 'Inloggning misslyckades'
+        };
 
-    // Cancel previous request
-    if (locationController.current) {
-      locationController.current.abort();
-    }
+        errorMessage = errorInfo.message;
+        alertTitle = errorInfo.title;
+      }
 
-    locationController.current = new AbortController();
+      setErrors({ general: errorMessage });
+      triggerShakeAnimation();
 
-    const fetchLocation = async () => {
-      try {
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Location fetch timeout')), LOCATION_FETCH_TIMEOUT)
+      // Show specific alert for business authorization errors
+      if (error.code === 'unauthorized-business-user') {
+        Alert.alert(
+          alertTitle,
+          `${errorMessage}\n\nVill du logga in som vanlig användare istället?`,
+          [
+            { text: 'Avbryt', style: 'cancel' },
+            {
+              text: 'Vanlig inloggning',
+              onPress: () => navigation.navigate('SignInScreen'),
+            },
+            {
+              text: 'Kontakta support',
+              onPress: () => {
+                Alert.alert(
+                  'Kontakta support',
+                  'E-post: support@jobfinder.se\nTelefon: 08-123 456 78',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              },
+            },
+          ]
         );
-
-        const locationPromise = fetchLocationName(latitude, longitude);
-        const locationName = await Promise.race([locationPromise, timeoutPromise]);
-
-        // Check if component is still mounted and profile is still current
-        if (isMounted.current && !locationController.current?.signal.aborted) {
-          setProfileQueue(prev => {
-            const updated = [...prev];
-            if (updated[0]?.id === currentProfile.id) {
-              updated[0] = { ...updated[0], locationName };
-            }
-            return updated;
-          });
-        }
-      } catch (error: any) {
-        if (error.name !== 'AbortError' && error.message !== 'Location fetch timeout') {
-          console.warn('Location fetch failed:', error);
-        }
+      } else if (attemptCount >= 2) {
+        // Show help options after repeated failures
+        Alert.alert(
+          alertTitle,
+          `${errorMessage}\n\nBehöver du hjälp?`,
+          [
+            { text: 'Försök igen', style: 'cancel' },
+            {
+              text: 'Glömt lösenord',
+              onPress: () => {
+                Alert.alert('Info', 'Funktionen för återställning av lösenord kommer snart.');
+              },
+            },
+            {
+              text: 'Kontakta support',
+              onPress: () => {
+                Alert.alert(
+                  'Kontakta support',
+                  'För företagskonton:\nE-post: business@jobfinder.se\nTelefon: 08-123 456 78',
+                  [{ text: 'OK', style: 'default' }]
+                );
+              },
+            },
+          ]
+        );
       }
-    };
+    } finally {
+      setLoading(false);
+    }
+  }, [email, password, loading, validateForm, triggerShakeAnimation, attemptCount, navigation]);
 
-    fetchLocation();
-  }, [currentProfile?.id, currentProfile?.location]);
-
-  // Cleanup on focus/unmount
-  useFocusEffect(
-    useCallback(() => {
-      isMounted.current = true;
-      return () => {
-        if (locationController.current) {
-          locationController.current.abort();
-        }
-      };
-    }, [])
-  );
-
-  useEffect(() => {
-    return () => {
-      isMounted.current = false;
-      if (locationController.current) {
-        locationController.current.abort();
-      }
-    };
-  }, []);
-
-  // Utility function for debouncing (same as before)
-  function debounce<T extends (...args: any[]) => any>(
-    func: T,
-    wait: number
-  ): (...args: Parameters<T>) => void {
-    let timeout: NodeJS.Timeout;
-    return (...args: Parameters<T>) => {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => func(...args), wait);
-    };
-  }
-
-  if (loading || !currentUser) {
-    return (
-      <View style={styles.container}>
-        <ActivityIndicator size="large" color="#fff" />
-        <Text style={styles.loadingText}>Loading profiles...</Text>
-        {prefetching && (
-          <Text style={styles.prefetchingText}>Loading more...</Text>
+  // Enhanced input component
+  const EnhancedInput = useCallback(({
+    placeholder,
+    value,
+    onChangeText,
+    secureTextEntry = false,
+    keyboardType = 'default',
+    autoCapitalize = 'none',
+    error,
+    inputRef,
+    onSubmitEditing,
+    icon,
+  }: {
+    placeholder: string;
+    value: string;
+    onChangeText: (text: string) => void;
+    secureTextEntry?: boolean;
+    keyboardType?: any;
+    autoCapitalize?: any;
+    error?: string;
+    inputRef?: React.RefObject<TextInput | null>;
+    onSubmitEditing?: () => void;
+    icon: string;
+  }) => (
+    <Animated.View style={[
+      styles.inputContainer,
+      error && styles.inputContainerError,
+      { transform: [{ translateX: shakeAnim }] }
+    ]}>
+      <View style={styles.inputWrapper}>
+        <Icon name={icon} size={20} color={error ? '#e74c3c' : '#666'} style={styles.inputIcon} />
+        <TextInput
+          ref={inputRef}
+          style={[styles.input, error && styles.inputError]}
+          placeholder={placeholder}
+          placeholderTextColor={error ? '#e74c3c' : '#999'}
+          value={value}
+          onChangeText={onChangeText}
+          secureTextEntry={secureTextEntry && !showPassword}
+          keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={false}
+          onSubmitEditing={onSubmitEditing}
+          returnKeyType={secureTextEntry ? 'done' : 'next'}
+          editable={!loading}
+        />
+        {secureTextEntry && (
+          <TouchableOpacity
+            style={styles.eyeButton}
+            onPress={() => setShowPassword(!showPassword)}
+            disabled={loading}
+          >
+            <Icon
+              name={showPassword ? 'visibility-off' : 'visibility'}
+              size={20}
+              color="#666"
+            />
+          </TouchableOpacity>
         )}
       </View>
-    );
-  }
+      {error && (
+        <Text style={styles.errorText}>
+          <Icon name="error" size={12} color="#e74c3c" /> {error}
+        </Text>
+      )}
+    </Animated.View>
+  ), [shakeAnim, showPassword, loading]);
 
-  if (error) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => {
-            setError(null);
-            isInitialized.current = false;
-            initializeProfiles();
-          }}
-        >
-          <Text style={styles.retryButtonText}>Try Again</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // ADD THIS EMPTY STATE CHECK:
-  if (!currentProfile) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.emptyText}>No more profiles to show!</Text>
-        <TouchableOpacity
-          style={styles.retryButton}
-          onPress={() => prefetchMoreProfiles()}
-          disabled={prefetching}
-        >
-          <Text style={styles.retryButtonText}>
-            {prefetching ? 'Loading...' : 'Load More'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  // Main render
   return (
-    <View style={styles.container}>
-      {/* Profile Card */}
-      <Animated.View
-        {...panResponder.panHandlers}
-        style={[
-          styles.card,
-          {
-            transform: [
-              { translateX: pan.x },
-              { translateY: pan.y },
-              {
-                rotate: pan.x.interpolate({
-                  inputRange: [-300, 0, 300],
-                  outputRange: ['-15deg', '0deg', '15deg'],
-                  extrapolate: 'clamp'
-                })
-              }
-            ]
-          }
-        ]}
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="light" backgroundColor="#8456ad" />
+
+      {/* Background */}
+      <View style={styles.backgroundOverlay} />
+
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoidingView}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
       >
-        <Image
-          source={{
-            uri: currentProfile.image || 'https://via.placeholder.com/300x400/8456ad/ffffff?text=No+Image'
-          }}
-          style={styles.profileImage}
-          resizeMode="cover"
-        />
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Header */}
+          <View style={styles.header}>
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+              disabled={loading}
+            >
+              <Icon name="arrow-back" size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
 
-        <View style={styles.cardInfo}>
-          <Text style={styles.name} numberOfLines={1}>
-            {currentProfile.firstName} {currentProfile.lastName}
-          </Text>
-
-          {currentProfile.experience && (
-            <Text style={styles.experience} numberOfLines={1}>
-              💼 {currentProfile.experience}
-            </Text>
-          )}
-
-          <Text style={styles.skills} numberOfLines={2}>
-            🔧 {currentProfile.skills || "No skills listed"}
-          </Text>
-
-          <Text style={styles.location} numberOfLines={1}>
-            📍 {currentProfile.locationName || "Loading location..."}
-          </Text>
-
-          {currentProfile.workCommitment && (
-            <Text style={styles.workCommitment} numberOfLines={1}>
-              ⏰ {currentProfile.workCommitment}
-            </Text>
-          )}
-
-          {currentProfile.score && (
-            <View style={styles.matchContainer}>
-              <Text style={styles.matchScore}>
-                {Math.round(currentProfile.score * 100)}% Match
+          {/* Content */}
+          <Animated.View
+            style={[
+              styles.content,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: slideAnim }],
+              },
+            ]}
+          >
+            {/* Title Section */}
+            <View style={styles.titleContainer}>
+              <Icon name="business" size={48} color="#fff" style={styles.titleIcon} />
+              <Text style={styles.title}>Företagsinloggning</Text>
+              <Text style={styles.subtitle}>
+                Logga in med ditt företagskonto för att komma åt företagsfunktioner
               </Text>
             </View>
-          )}
-        </View>
-      </Animated.View>
 
-      {/* Queue indicator */}
-      <View style={styles.queueIndicator}>
-        <Text style={styles.queueText}>
-          {profileQueue.length - 1} more profiles
-        </Text>
-        {prefetching && (
-          <ActivityIndicator size="small" color="#fff" style={styles.prefetchIndicator} />
-        )}
-      </View>
+            {/* Business Info Section */}
+            <View style={styles.infoContainer}>
+              <View style={styles.infoItem}>
+                <Icon name="check-circle" size={16} color="#4CAF50" />
+                <Text style={styles.infoText}>Tillgång till kandidatprofiler</Text>
+              </View>
+              <View style={styles.infoItem}>
+                <Icon name="check-circle" size={16} color="#4CAF50" />
+                <Text style={styles.infoText}>Hantera jobbannonser</Text>
+              </View>
+              <View style={styles.infoItem}>
+                <Icon name="check-circle" size={16} color="#4CAF50" />
+                <Text style={styles.infoText}>Avancerad matchning</Text>
+              </View>
+            </View>
 
-      {/* Bottom Navigation */}
-      <View style={styles.bottomMenu}>
-        <TouchableOpacity
-          style={styles.menuButton}
-          onPress={() => navigation.navigate("MessagesScreen")}
-          activeOpacity={0.7}
-        >
-          <Icon name="envelope" size={24} color="black" />
-          <Text style={styles.menuText}>Messages</Text>
-        </TouchableOpacity>
+            {/* Form */}
+            <View style={styles.form}>
+              {/* General Error */}
+              {errors.general && (
+                <View style={styles.generalErrorContainer}>
+                  <Icon name="error" size={20} color="#e74c3c" />
+                  <Text style={styles.generalErrorText}>{errors.general}</Text>
+                </View>
+              )}
 
-        <TouchableOpacity style={styles.menuButton} activeOpacity={0.7}>
-          <Icon name="home" size={24} color="black" />
-          <Text style={styles.menuText}>Home</Text>
-        </TouchableOpacity>
+              <EnhancedInput
+                placeholder="Företags e-postadress"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                error={errors.email}
+                inputRef={emailRef}
+                onSubmitEditing={() => passwordRef.current?.focus()}
+                icon="business"
+              />
 
-        <TouchableOpacity
-          style={styles.menuButton}
-          onPress={() => navigation.navigate("SettingsScreen")}
-          activeOpacity={0.7}
-        >
-          <Icon name="cog" size={24} color="black" />
-          <Text style={styles.menuText}>Settings</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
+              <EnhancedInput
+                placeholder="Lösenord"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                error={errors.password}
+                inputRef={passwordRef}
+                onSubmitEditing={handleSignIn}
+                icon="lock"
+              />
+
+              {/* Forgot Password Link */}
+              <TouchableOpacity
+                style={styles.forgotPasswordButton}
+                onPress={() => {
+                  Alert.alert(
+                    'Återställ lösenord',
+                    'För företagskonton, kontakta vår support:\n\nE-post: business@jobfinder.se\nTelefon: 08-123 456 78',
+                    [{ text: 'OK', style: 'default' }]
+                  );
+                }}
+                disabled={loading}
+              >
+                <Text style={styles.forgotPasswordText}>Glömt lösenord?</Text>
+              </TouchableOpacity>
+
+              {/* Sign In Button */}
+              <TouchableOpacity
+                style={[styles.signInButton, loading && styles.signInButtonDisabled]}
+                onPress={handleSignIn}
+                disabled={loading}
+                activeOpacity={0.8}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Icon name="business" size={20} color="#fff" />
+                    <Text style={styles.signInButtonText}>Logga in som företag</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {/* Regular Sign In Link */}
+              <View style={styles.regularSignInContainer}>
+                <Text style={styles.regularSignInText}>Inte ett företag? </Text>
+                <TouchableOpacity
+                  onPress={() => navigation.navigate('SignInScreen')}
+                  disabled={loading}
+                >
+                  <Text style={styles.regularSignInLink}>Vanlig inloggning</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Support Link */}
+              <TouchableOpacity
+                style={styles.supportButton}
+                onPress={() => {
+                  Alert.alert(
+                    'Företagssupport',
+                    'Behöver du hjälp med ditt företagskonto?\n\nE-post: business@jobfinder.se\nTelefon: 08-123 456 78\n\nÖppettider: Mån-Fre 08:00-17:00',
+                    [{ text: 'OK', style: 'default' }]
+                  );
+                }}
+                disabled={loading}
+              >
+                <Icon name="support" size={16} color="#fff" />
+                <Text style={styles.supportButtonText}>Kontakta företagssupport</Text>
+              </TouchableOpacity>
+            </View>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
-// Utility function for debouncing
-function debounce<T extends (...args: any[]) => any>(
-  func: T,
-  wait: number
-): (...args: Parameters<T>) => void {
-  let timeout: NodeJS.Timeout;
-  return (...args: Parameters<T>) => {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => func(...args), wait);
-  };
-}
-
-// Enhanced styles with better visual hierarchy
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
     backgroundColor: '#8456ad',
   },
-  card: {
-    width: 320,
-    height: 520,
-    backgroundColor: "#fff",
-    borderRadius: 20,
-    overflow: "hidden",
-    elevation: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.25,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 10 },
-    position: 'absolute',
-    bottom: 160,
-  },
-  profileImage: {
-    width: "100%",
-    height: "55%",
-    backgroundColor: '#f0f0f0',
-  },
-  cardInfo: {
-    flex: 1,
-    padding: 20,
-    backgroundColor: "#fff",
-    justifyContent: 'space-between',
-  },
-  name: {
-    fontSize: 26,
-    fontWeight: "700",
-    marginBottom: 8,
-    color: '#333'
-  },
-  skills: {
-    fontSize: 15,
-    marginBottom: 6,
-    color: '#555',
-    lineHeight: 20,
-  },
-  experience: {
-    fontSize: 15,
-    marginBottom: 6,
-    color: '#555'
-  },
-  location: {
-    fontSize: 14,
-    color: "#666",
-    marginBottom: 6
-  },
-  workCommitment: {
-    fontSize: 14,
-    marginBottom: 8,
-    color: '#555'
-  },
-  matchContainer: {
-    alignSelf: 'flex-start',
+  backgroundOverlay: {
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: '#8456ad',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
   },
-  matchScore: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  queueIndicator: {
-    position: 'absolute',
-    top: 60,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 15,
-  },
-  queueText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  prefetchIndicator: {
-    marginLeft: 8,
-  },
-  bottomMenu: {
-    position: "absolute",
-    bottom: 40,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    backgroundColor: "#fff",
-    marginHorizontal: 40,
-    paddingVertical: 15,
-    paddingHorizontal: 25,
-    borderRadius: 40,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 20,
-    shadowOpacity: 0.15,
-    elevation: 8,
-  },
-  menuButton: {
+  keyboardAvoidingView: {
     flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
+  header: {
+    paddingTop: 20,
+    paddingHorizontal: 20,
+    zIndex: 1,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 4,
-    paddingVertical: 8,
   },
-  menuText: {
-    fontSize: 12,
-    color: "black",
-    fontWeight: '600'
+  content: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 40,
   },
-  loadingText: {
+  titleContainer: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  titleIcon: {
+    marginBottom: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 16,
+    borderRadius: 24,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
     color: '#fff',
-    marginTop: 16,
-    fontSize: 16,
-    fontWeight: '500',
+    textAlign: 'center',
+    marginBottom: 8,
   },
-  prefetchingText: {
-    color: '#fff',
-    marginTop: 8,
+  subtitle: {
     fontSize: 14,
-    opacity: 0.8,
+    color: '#fff',
+    opacity: 0.9,
+    textAlign: 'center',
+    lineHeight: 20,
+    paddingHorizontal: 20,
+  },
+  infoContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 32,
+  },
+  infoItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  infoText: {
+    color: '#fff',
+    fontSize: 14,
+    marginLeft: 8,
+    opacity: 0.9,
+  },
+  form: {
+    width: '100%',
+  },
+  generalErrorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(231, 76, 60, 0.1)',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(231, 76, 60, 0.3)',
+  },
+  generalErrorText: {
+    color: '#e74c3c',
+    fontSize: 14,
+    marginLeft: 8,
+    flex: 1,
+  },
+  inputContainer: {
+    marginBottom: 16,
+  },
+  inputContainerError: {
+    marginBottom: 8,
+  },
+  inputWrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    height: 56,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  inputIcon: {
+    marginRight: 12,
+  },
+  input: {
+    flex: 1,
+    fontSize: 16,
+    color: '#333',
+    height: '100%',
+  },
+  inputError: {
+    borderColor: '#e74c3c',
+  },
+  eyeButton: {
+    padding: 4,
   },
   errorText: {
+    color: '#e74c3c',
+    fontSize: 12,
+    marginTop: 4,
+    marginLeft: 16,
+  },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    marginBottom: 24,
+    padding: 4,
+  },
+  forgotPasswordText: {
+    color: '#fff',
+    fontSize: 14,
+    textDecorationLine: 'underline',
+    opacity: 0.9,
+  },
+  signInButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 2,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  signInButtonDisabled: {
+    opacity: 0.7,
+  },
+  signInButtonText: {
     color: '#fff',
     fontSize: 18,
-    textAlign: 'center',
-    marginHorizontal: 40,
-    marginBottom: 20,
-    lineHeight: 24,
-  },
-  emptyText: {
-    color: '#fff',
-    fontSize: 20,
-    textAlign: 'center',
-    marginBottom: 20,
-    fontWeight: '600',
-  },
-  retryButton: {
-    backgroundColor: '#fff',
-    paddingHorizontal: 30,
-    paddingVertical: 12,
-    borderRadius: 25,
-    elevation: 3,
-  },
-  retryButtonText: {
-    color: '#8456ad',
-    fontSize: 16,
     fontWeight: '700',
+    marginLeft: 8,
+  },
+  regularSignInContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  regularSignInText: {
+    color: '#fff',
+    fontSize: 14,
+    opacity: 0.9,
+  },
+  regularSignInLink: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  supportButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  supportButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    marginLeft: 6,
+    opacity: 0.9,
   },
 });
 
-export default MainSwipe;
+export default BusinessSignIn;

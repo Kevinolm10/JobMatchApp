@@ -76,3 +76,9 @@ const addUsersToFirestore = async () => {
 
 // Starta uppladdning
 addUsersToFirestore(); */
+
+import { deleteDoc, doc, getDoc, setDoc } from "@react-native-firebase/firestore";
+import { db } from "./firebaseAuth";
+
+
+// Run this once to fix existing business users

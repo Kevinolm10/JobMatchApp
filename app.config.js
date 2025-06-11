@@ -84,6 +84,9 @@ export default {
       typedRoutes: true,
     },
     extra: {
+      eas: {
+        projectId: "05effded-7d47-4a9d-bb99-a6cd84b4ef6e"
+      },
       // Add Firebase config validation
       firebaseApiKey: process.env.FIREBASE_API_KEY || "AIzaSyBvy5QxC36HFMBGriZcThZkLS-qzhJlhho",
       firebaseAuthDomain: process.env.FIREBASE_AUTH_DOMAIN || "jobfinder-8b8d3.firebaseapp.com",
